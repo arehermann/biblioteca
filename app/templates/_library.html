@@ -1,0 +1,8 @@
+{% macro library_picker(selected) %}
+<fieldset class="segmented">
+  <legend>Biblioteca</legend>
+  {% for lib in libraries %}
+  <label><input type="radio" name="library" value="{{ lib }}" {% if lib == selected %}checked{% endif %}> <span>{{ lib }}</span></label>
+  {% endfor %}
+</fieldset>
+{% endmacro %}

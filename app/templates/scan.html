@@ -1,14 +1,38 @@
 {% extends "base.html" %}
+{% from "_library.html" import library_picker with context %}
 {% block content %}
 <section class="card narrow">
   <h1>Foto de estante</h1>
-  <p>Saca una foto de una repisa con los lomos bien iluminados y derechos. Funciona mejor con una repisa por foto.</p>
+  <p>Una repisa por foto, con los lomos bien iluminados y derechos. Si la foto muestra otras repisas, recórtala en la galería y súbela desde ahí.</p>
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
-  <form method="post" action="/scan" enctype="multipart/form-data" class="stack" onsubmit="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Leyendo lomos… puede tardar un minuto';">
-    <label>Foto <input type="file" name="photo" accept="image/*" capture="environment" required></label>
+  <form method="post" action="/scan" enctype="multipart/form-data" class="stack" id="scan-form">
+    {{ library_picker(library) }}
+    <div class="photo-pick">
+      <label class="btn"><input type="file" name="camera" accept="image/*" capture="environment" hidden> 📷 Sacar foto</label>
+      <label class="btn"><input type="file" name="gallery" accept="image/*" hidden> 🖼️ Elegir de la galería</label>
+    </div>
+    <img class="preview" alt="Foto elegida" hidden>
     <label>Estante (opcional) <input name="shelf" list="shelves" placeholder="Ej: Living, repisa 2"></label>
     <datalist id="shelves">{% for s in shelves %}<option value="{{ s }}">{% endfor %}</datalist>
-    <button class="btn primary">Leer libros</button>
+    <button class="btn primary" disabled>Leer libros</button>
   </form>
 </section>
+<script>
+  const form = document.getElementById('scan-form');
+  const inputs = form.querySelectorAll('input[type=file]');
+  const preview = form.querySelector('.preview');
+  const submit = form.querySelector('button');
+  inputs.forEach(input => input.addEventListener('change', () => {
+    if (!input.files.length) return;
+    // Keep only the photo chosen last, whichever button it came from.
+    inputs.forEach(other => { if (other !== input) other.value = ''; });
+    preview.src = URL.createObjectURL(input.files[0]);
+    preview.hidden = false;
+    submit.disabled = false;
+  }));
+  form.addEventListener('submit', () => {
+    submit.disabled = true;
+    submit.textContent = 'Leyendo lomos… puede tardar un minuto';
+  });
+</script>
 {% endblock %}

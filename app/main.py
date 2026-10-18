@@ -3,6 +3,7 @@ import io
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -45,13 +46,25 @@ app.add_middleware(
 
 
 def render(request: Request, name: str, **ctx):
-    return templates.TemplateResponse(request, name, {"user": request.session.get("user"), **ctx})
+    return templates.TemplateResponse(request, name, {"user": request.session.get("user"),
+                                                      "libraries": db.LIBRARIES, **ctx})
+
+
+def current_library(request: Request) -> str:
+    """Last library used for adding books, so each form starts on the one you were working in."""
+    return db.clean_library(request.session.get("library"))
+
+
+def remember_library(request: Request, library: str) -> str:
+    library = db.clean_library(library)
+    request.session["library"] = library
+    return library
 
 
 def render_import(request: Request, result=None):
     with db.connect() as conn:
         no_cover = conn.execute("SELECT COUNT(*) FROM books WHERE cover_url = '' AND cover_checked = 1").fetchone()[0]
-    return render(request, "import.html", result=result, covers_left=covers.remaining(),
+    return render(request, "import.html", result=result, covers_left=covers.remaining(), library=current_library(request),
                   covers_running=covers.is_running(), no_cover=no_cover)
 
 
@@ -69,12 +82,18 @@ def form_book(form) -> dict:
         "year": int(year) if year.isdigit() else None,
         "cover_url": (form.get("cover_url") or "").strip(),
         "shelf": (form.get("shelf") or "").strip(),
+        "library": db.clean_library(form.get("library")),
         "notes": (form.get("notes") or "").strip(),
     }
 
 
-def shelves(conn) -> list[str]:
-    return [r[0] for r in conn.execute("SELECT DISTINCT shelf FROM books WHERE shelf != '' ORDER BY shelf")]
+def shelves(conn, library: str = "") -> list[str]:
+    if library:
+        rows = conn.execute("SELECT DISTINCT shelf FROM books WHERE shelf != '' AND library = ? ORDER BY shelf",
+                            (library,))
+    else:
+        rows = conn.execute("SELECT DISTINCT shelf FROM books WHERE shelf != '' ORDER BY shelf")
+    return [r[0] for r in rows]
 
 
 # --- Sesión ---------------------------------------------------------------
@@ -103,8 +122,12 @@ def logout(request: Request):
 # --- Catálogo -------------------------------------------------------------
 
 @app.get("/", response_class=HTMLResponse)
-def catalog(request: Request, q: str = "", shelf: str = "", page: int = 1):
+def catalog(request: Request, q: str = "", shelf: str = "", library: str = "", page: int = 1):
+    library = library if library in db.LIBRARIES else ""
     where, params = [], []
+    if library:
+        where.append("library = ?")
+        params.append(library)
     if q:
         where.append("(title LIKE ? OR author LIKE ? OR isbn LIKE ?)")
         params += [f"%{q}%"] * 3
@@ -120,21 +143,34 @@ def catalog(request: Request, q: str = "", shelf: str = "", page: int = 1):
             params + [PAGE_SIZE, (page - 1) * PAGE_SIZE],
         ).fetchall()
         all_count = conn.execute("SELECT COUNT(*) FROM books").fetchone()[0]
-        shelf_list = shelves(conn)
+        counts = dict(conn.execute("SELECT library, COUNT(*) FROM books GROUP BY library").fetchall())
+        shelf_list = shelves(conn, library)
     return render(request, "catalog.html", covers_running=covers.is_running(), covers_left=covers.remaining(),
-                  books=books, total=total, all_count=all_count, q=q, shelf=shelf,
+                  books=books, total=total, all_count=all_count, q=q, shelf=shelf, library=library, counts=counts,
                   shelves=shelf_list, page=page, pages=max(1, -(-total // PAGE_SIZE)))
+
+
+@app.post("/books/move")
+async def move_books(request: Request):
+    form = await request.form()
+    target = db.clean_library(form.get("to"))
+    ids = [int(i) for i in form.getlist("book") if str(i).isdigit()]
+    if ids:
+        with db.connect() as conn:
+            conn.execute(f"UPDATE books SET library = ? WHERE id IN ({','.join('?' * len(ids))})", [target, *ids])
+    return back(f"/?library={target}&moved={len(ids)}")
 
 
 @app.get("/books/new", response_class=HTMLResponse)
 def new_book_page(request: Request):
     with db.connect() as conn:
-        return render(request, "book.html", book=None, shelves=shelves(conn))
+        return render(request, "book.html", book=None, shelves=shelves(conn), library=current_library(request))
 
 
 @app.post("/books/new")
 async def new_book(request: Request):
     book = form_book(await request.form())
+    remember_library(request, book["library"])
     if not book["title"]:
         return back("/books/new")
     if not book["cover_url"]:
@@ -153,7 +189,7 @@ def book_page(request: Request, book_id: int, saved: int = 0):
         book = conn.execute("SELECT * FROM books WHERE id = ?", (book_id,)).fetchone()
         if book is None:
             return back("/")
-        return render(request, "book.html", book=book, shelves=shelves(conn), saved=saved)
+        return render(request, "book.html", book=book, shelves=shelves(conn), saved=saved, library=book["library"])
 
 
 @app.post("/books/{book_id}")
@@ -174,31 +210,41 @@ def delete_book(book_id: int):
 
 # --- Fotos de estantes ----------------------------------------------------
 
+def scan_form(request: Request, error: str | None = None):
+    with db.connect() as conn:
+        return render(request, "scan.html", shelves=shelves(conn), library=current_library(request), error=error)
+
+
 @app.get("/scan", response_class=HTMLResponse)
 def scan_page(request: Request):
-    with db.connect() as conn:
-        return render(request, "scan.html", shelves=shelves(conn), error=None)
+    return scan_form(request)
 
 
 @app.post("/scan")
-async def scan(request: Request, photo: UploadFile = File(...), shelf: str = Form("")):
-    data = await photo.read()
+async def scan(request: Request, camera: UploadFile | None = File(None), gallery: UploadFile | None = File(None),
+               shelf: str = Form(""), library: str = Form("")):
+    library = remember_library(request, library)
+    data = b""
+    for upload in (camera, gallery):
+        if upload is not None and upload.filename:
+            data = await upload.read()
+            if data:
+                break
+    if not data:
+        return scan_form(request, "Saca una foto o elige una de la galería.")
     try:
         found = await vision.read_spines(data)
     except vision.VisionError as e:
-        with db.connect() as conn:
-            return render(request, "scan.html", shelves=shelves(conn), error=str(e))
+        return scan_form(request, str(e))
     except Exception:
-        with db.connect() as conn:
-            return render(request, "scan.html", shelves=shelves(conn),
-                          error="No se pudo leer la imagen. ¿Es una foto (JPG, PNG o HEIC convertido)?")
+        return scan_form(request, "No se pudo leer la imagen. ¿Es una foto en JPG o PNG?")
     metas = await lookup.lookup_many(found)
     items = []
     with db.connect() as conn:
         for book, meta in zip(found, metas):
-            dup = db.find_duplicate(conn, book["title"], book["author"])
+            dup = db.find_duplicate(conn, book["title"], book["author"], library)
             items.append({**book, **(meta or {}), "matched": bool(meta), "duplicate_id": dup["id"] if dup else None})
-        scan_id = db.save_scan(conn, shelf.strip(), items, request.session["user"])
+        scan_id = db.save_scan(conn, shelf.strip(), items, request.session["user"], library)
     return back(f"/scan/{scan_id}")
 
 
@@ -220,6 +266,7 @@ async def save_scan(request: Request, scan_id: int):
         if data is None:
             return back("/scan")
         shelf = (form.get("shelf") or data["shelf"]).strip()
+        library = db.clean_library(form.get("library") or data["library"])
         for i, item in enumerate(data["items"]):
             if not form.get(f"add_{i}"):
                 continue
@@ -228,11 +275,11 @@ async def save_scan(request: Request, scan_id: int):
             db.add_book(conn, {
                 "title": title, "author": author, "isbn": item.get("isbn", ""),
                 "publisher": item.get("publisher", ""), "year": item.get("year"),
-                "cover_url": item.get("cover_url", ""), "shelf": shelf, "source": "foto",
+                "cover_url": item.get("cover_url", ""), "shelf": shelf, "library": library, "source": "foto",
             }, request.session["user"])
             added += 1
         conn.execute("DELETE FROM scans WHERE id = ?", (scan_id,))
-    return back(f"/?added={added}" + (f"&shelf={shelf}" if shelf else ""))
+    return back(f"/?added={added}&library={quote(library)}" + (f"&shelf={quote(shelf)}" if shelf else ""))
 
 
 # --- Importar y exportar --------------------------------------------------
@@ -243,14 +290,17 @@ def import_page(request: Request):
 
 
 @app.post("/import", response_class=HTMLResponse)
-async def import_csv(request: Request, file: UploadFile = File(...), only_owned: str = Form("")):
+async def import_csv(request: Request, file: UploadFile = File(...), only_owned: str = Form(""),
+                     library: str = Form("")):
+    library = remember_library(request, library)
     data = await file.read()
     owned_filter = bool(only_owned) and storygraph.has_owned_column(data)
     books, skipped_not_owned = storygraph.parse(data, only_owned=owned_filter)
     added = duplicates = 0
     with db.connect() as conn:
         for book in books:
-            if db.find_duplicate(conn, book["title"], book["author"]):
+            book["library"] = library
+            if db.find_duplicate(conn, book["title"], book["author"], library):
                 duplicates += 1
                 continue
             db.add_book(conn, book, request.session["user"])
@@ -276,10 +326,10 @@ async def fill_covers(retry: str = Form("")):
 def export_csv():
     out = io.StringIO()
     writer = csv.writer(out)
-    cols = ["title", "author", "isbn", "publisher", "year", "shelf", "notes", "added_by", "created_at"]
+    cols = ["title", "author", "isbn", "publisher", "year", "library", "shelf", "notes", "added_by", "created_at"]
     writer.writerow(cols)
     with db.connect() as conn:
-        for row in conn.execute(f"SELECT {', '.join(cols)} FROM books ORDER BY author, title"):
+        for row in conn.execute(f"SELECT {', '.join(cols)} FROM books ORDER BY library, author, title"):
             writer.writerow(list(row))
     return Response(out.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": "attachment; filename=biblioteca.csv"})

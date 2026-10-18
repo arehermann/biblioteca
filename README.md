@@ -2,7 +2,8 @@
 
 Catálogo web de nuestros libros físicos. Corre en la Raspberry Pi y se usa desde el celular a través de Tailscale.
 
-- **Foto de estante:** sacas una foto a una repisa, Claude lee los lomos, la app busca cada libro en Open Library (portada, ISBN, año) y tú confirmas antes de guardar.
+- **Dos bibliotecas:** Principal y Niños. Cada libro pertenece a una, el catálogo se puede ver por separado y puedes mover libros de una a otra seleccionándolos.
+- **Foto de estante:** sacas una foto a una repisa (o eliges una de la galería, ya recortada), Claude lee los lomos, la app busca cada libro en Open Library (portada, ISBN, año) y tú confirmas antes de guardar.
 - **Importar desde StoryGraph o Goodreads:** sube el CSV que exporta cualquiera de los dos. Se pueden importar solo los marcados como propios.
 - **Catálogo compartido:** cada persona tiene su usuario y las dos pueden agregar, editar y borrar.
 - **Búsqueda y estantes:** busca por título, autor o ISBN y filtra por estante.
@@ -60,7 +61,7 @@ Cada día se guarda una copia de la base en `data/respaldos/` y se conservan las
 
 ## Consejos para las fotos
 
-- Una repisa por foto, de frente y con buena luz.
+- Una repisa por foto, de frente y con buena luz. Si se ven otras repisas, recorta la foto en la galería del celular y súbela con "Elegir de la galería".
 - Lomos derechos. Si hay libros acostados, sácales otra foto aparte.
 - Las lecturas dudosas aparecen en amarillo y vienen desmarcadas: revísalas antes de agregar.
 

@@ -1,9 +1,18 @@
 {% extends "base.html" %}
 {% block content %}
 {% set added = request.query_params.get('added') %}
+{% set moved = request.query_params.get('moved') %}
 {% if added %}<p class="notice">Se agregaron {{ added }} libros.</p>{% endif %}
+{% if moved %}<p class="notice">Se movieron {{ moved }} libros a {{ library }}.</p>{% endif %}
 {% if covers_running %}<p class="notice">Buscando portadas en Open Library: quedan {{ covers_left }} libros. Recarga para ver el avance.</p>{% endif %}
+<nav class="tabs">
+  <a href="/" {% if not library %}class="active"{% endif %}>Todas <span class="muted">{{ all_count }}</span></a>
+  {% for lib in libraries %}
+  <a href="/?library={{ lib|urlencode }}" {% if lib == library %}class="active"{% endif %}>{{ lib }} <span class="muted">{{ counts.get(lib, 0) }}</span></a>
+  {% endfor %}
+</nav>
 <form class="filters" method="get" action="/">
+  <input type="hidden" name="library" value="{{ library }}">
   <input type="search" name="q" value="{{ q }}" placeholder="Buscar por título, autor o ISBN">
   <select name="shelf" onchange="this.form.submit()">
     <option value="">Todos los estantes</option>
@@ -12,35 +21,52 @@
   <button class="btn">Buscar</button>
 </form>
 <p class="muted">
-  {% if q or shelf %}{{ total }} de {{ all_count }} libros{% else %}{{ all_count }} libros{% endif %}
+  {{ total }} libros
   · <a href="/export.csv">Descargar CSV</a>
 </p>
 {% if not books %}
   <section class="card">
     {% if all_count == 0 %}
-      <p>Todavía no hay libros. Empieza <a href="/import">importando tu biblioteca de StoryGraph</a> o sacando una <a href="/scan">foto a un estante</a>.</p>
+      <p>Todavía no hay libros. Empieza <a href="/import">importando tu biblioteca de StoryGraph o Goodreads</a> o sacando una <a href="/scan">foto a un estante</a>.</p>
     {% else %}
       <p>No hay libros que coincidan con la búsqueda.</p>
     {% endif %}
   </section>
 {% endif %}
+<form method="post" action="/books/move" id="move-form">
 <ul class="grid">
   {% for b in books %}
-  <li>
+  <li class="pick">
+    <input type="checkbox" name="book" value="{{ b.id }}" aria-label="Seleccionar {{ b.title }}">
     <a href="/books/{{ b.id }}" class="book">
       {% if b.cover_url %}<img src="{{ b.cover_url }}" alt="" loading="lazy">{% else %}<div class="nocover">{{ b.title[:40] }}</div>{% endif %}
       <strong>{{ b.title }}</strong>
       <span class="muted">{{ b.author }}</span>
+      {% if not library %}<span class="tag">{{ b.library }}</span>{% endif %}
       {% if b.shelf %}<span class="tag">{{ b.shelf }}</span>{% endif %}
     </a>
   </li>
   {% endfor %}
 </ul>
+<div class="movebar" hidden>
+  <span><strong class="count">0</strong> seleccionados</span>
+  {% for lib in libraries %}<button class="btn" name="to" value="{{ lib }}">Mover a {{ lib }}</button>{% endfor %}
+</div>
+</form>
+<script>
+  const form = document.getElementById('move-form');
+  const bar = form.querySelector('.movebar');
+  form.addEventListener('change', () => {
+    const n = form.querySelectorAll('input[name=book]:checked').length;
+    bar.hidden = n === 0;
+    bar.querySelector('.count').textContent = n;
+  });
+</script>
 {% if pages > 1 %}
 <nav class="pager">
-  {% if page > 1 %}<a href="?q={{ q|urlencode }}&shelf={{ shelf|urlencode }}&page={{ page - 1 }}">← Anterior</a>{% endif %}
+  {% if page > 1 %}<a href="?q={{ q|urlencode }}&library={{ library|urlencode }}&shelf={{ shelf|urlencode }}&page={{ page - 1 }}">← Anterior</a>{% endif %}
   <span>Página {{ page }} de {{ pages }}</span>
-  {% if page < pages %}<a href="?q={{ q|urlencode }}&shelf={{ shelf|urlencode }}&page={{ page + 1 }}">Siguiente →</a>{% endif %}
+  {% if page < pages %}<a href="?q={{ q|urlencode }}&library={{ library|urlencode }}&shelf={{ shelf|urlencode }}&page={{ page + 1 }}">Siguiente →</a>{% endif %}
 </nav>
 {% endif %}
 {% endblock %}
