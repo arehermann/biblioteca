@@ -2,20 +2,22 @@
 {% block content %}
 {% set covers_left = request.query_params.get('covers_left') %}
 <section class="card narrow">
-  <h1>Importar desde StoryGraph</h1>
+  <h1>Importar desde StoryGraph o Goodreads</h1>
   {% if result %}
     <p class="notice">Se importaron {{ result.added }} libros.
       {% if result.duplicates %}{{ result.duplicates }} ya estaban en el catálogo.{% endif %}
       {% if result.skipped %}{{ result.skipped }} no estaban marcados como tuyos y se omitieron.{% endif %}</p>
-    {% if result.owned_missing %}<p class="error">El archivo no tiene la columna “Owned?”, así que se importaron todos los libros.</p>{% endif %}
+    {% if result.owned_missing %}<p class="error">El archivo no dice qué libros son tuyos, así que se importaron todos.</p>{% endif %}
+    {% if result.skipped and not result.added and not result.duplicates %}<p class="error">Ningún libro del archivo estaba marcado como tuyo. Si no usabas esa marca, desmarca la opción de abajo y vuelve a importar.</p>{% endif %}
   {% endif %}
   <ol>
     <li>En StoryGraph entra a <em>Manage Account</em> y elige <em>Export StoryGraph Library</em>.</li>
-    <li>Descarga el CSV que te envían y súbelo aquí.</li>
+    <li>En Goodreads entra a <em>My Books</em>, luego <em>Import and export</em> y elige <em>Export Library</em>.</li>
+    <li>Descarga el CSV y súbelo aquí. Si importas de los dos, los libros repetidos se saltan solos.</li>
   </ol>
   <form method="post" action="/import" enctype="multipart/form-data" class="stack">
     <label>Archivo CSV <input type="file" name="file" accept=".csv,text/csv" required></label>
-    <label class="check"><input type="checkbox" name="only_owned" value="1" checked> Solo los libros marcados como míos (“Owned”)</label>
+    <label class="check"><input type="checkbox" name="only_owned" value="1" checked> Solo los libros marcados como míos (“Owned” en StoryGraph, “Owned Copies” en Goodreads)</label>
     <button class="btn primary">Importar</button>
   </form>
 </section>

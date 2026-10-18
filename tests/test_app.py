@@ -120,3 +120,26 @@ def test_edit_delete_export(client):
     assert "Ficciones,Borges" in client.get("/export.csv").text
     client.post(book_url + "/delete")
     assert "Ficciones" not in client.get("/").text
+
+
+GOODREADS = (
+    "Book Id,Title,Author,Author l-f,Additional Authors,ISBN,ISBN13,My Rating,Exclusive Shelf,Owned Copies\n"
+    '1,Ficciones,Jorge Luis Borges,"Borges, Jorge Luis",,"=""0802130305""","=""9780802130303""",5,read,1\n'
+    '2,Rayuela,Julio Cortázar,"Cortázar, Julio",,"=""""","=""9788437604572""",4,to-read,0\n'
+).encode()
+
+
+def test_goodreads_parse():
+    books, skipped = storygraph.parse(GOODREADS, only_owned=True)
+    assert [(b["title"], b["author"], b["isbn"], b["source"]) for b in books] == \
+        [("Ficciones", "Jorge Luis Borges", "9780802130303", "goodreads")]
+    assert skipped == 1
+    books, _ = storygraph.parse(GOODREADS, only_owned=False)
+    assert books[1]["isbn"] == "9788437604572"
+
+
+def test_goodreads_nothing_owned_explains(client):
+    login(client)
+    csv_none = GOODREADS.replace(b",1\n", b",0\n")
+    r = client.post("/import", files={"file": ("gr.csv", csv_none, "text/csv")}, data={"only_owned": "1"})
+    assert "Ningún libro del archivo estaba marcado como tuyo" in r.text

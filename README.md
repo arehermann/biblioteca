@@ -3,7 +3,7 @@
 Catálogo web de nuestros libros físicos. Corre en la Raspberry Pi y se usa desde el celular a través de Tailscale.
 
 - **Foto de estante:** sacas una foto a una repisa, Claude lee los lomos, la app busca cada libro en Open Library (portada, ISBN, año) y tú confirmas antes de guardar.
-- **Importar desde StoryGraph:** sube el CSV que exporta StoryGraph. Se pueden importar solo los marcados como propios (“Owned”).
+- **Importar desde StoryGraph o Goodreads:** sube el CSV que exporta cualquiera de los dos. Se pueden importar solo los marcados como propios.
 - **Catálogo compartido:** cada persona tiene su usuario y las dos pueden agregar, editar y borrar.
 - **Búsqueda y estantes:** busca por título, autor o ISBN y filtra por estante.
 - **Exportar:** descarga todo el catálogo en CSV cuando quieras.
