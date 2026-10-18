@@ -1,0 +1,13 @@
+[Unit]
+Description=Biblioteca (catálogo de libros)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/biblioteca
+ExecStart=/home/pi/biblioteca/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8001
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

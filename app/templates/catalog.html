@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+{% set added = request.query_params.get('added') %}
+{% if added %}<p class="notice">Se agregaron {{ added }} libros.</p>{% endif %}
+<form class="filters" method="get" action="/">
+  <input type="search" name="q" value="{{ q }}" placeholder="Buscar por título, autor o ISBN">
+  <select name="shelf" onchange="this.form.submit()">
+    <option value="">Todos los estantes</option>
+    {% for s in shelves %}<option value="{{ s }}" {% if s == shelf %}selected{% endif %}>{{ s }}</option>{% endfor %}
+  </select>
+  <button class="btn">Buscar</button>
+</form>
+<p class="muted">
+  {% if q or shelf %}{{ total }} de {{ all_count }} libros{% else %}{{ all_count }} libros{% endif %}
+  · <a href="/export.csv">Descargar CSV</a>
+</p>
+{% if not books %}
+  <section class="card">
+    {% if all_count == 0 %}
+      <p>Todavía no hay libros. Empieza <a href="/import">importando tu biblioteca de StoryGraph</a> o sacando una <a href="/scan">foto a un estante</a>.</p>
+    {% else %}
+      <p>No hay libros que coincidan con la búsqueda.</p>
+    {% endif %}
+  </section>
+{% endif %}
+<ul class="grid">
+  {% for b in books %}
+  <li>
+    <a href="/books/{{ b.id }}" class="book">
+      {% if b.cover_url %}<img src="{{ b.cover_url }}" alt="" loading="lazy">{% else %}<div class="nocover">{{ b.title[:40] }}</div>{% endif %}
+      <strong>{{ b.title }}</strong>
+      <span class="muted">{{ b.author }}</span>
+      {% if b.shelf %}<span class="tag">{{ b.shelf }}</span>{% endif %}
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+{% if pages > 1 %}
+<nav class="pager">
+  {% if page > 1 %}<a href="?q={{ q|urlencode }}&shelf={{ shelf|urlencode }}&page={{ page - 1 }}">← Anterior</a>{% endif %}
+  <span>Página {{ page }} de {{ pages }}</span>
+  {% if page < pages %}<a href="?q={{ q|urlencode }}&shelf={{ shelf|urlencode }}&page={{ page + 1 }}">Siguiente →</a>{% endif %}
+</nav>
+{% endif %}
+{% endblock %}

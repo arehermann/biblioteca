@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h1>Revisa los libros detectados</h1>
+  <p>Se encontraron {{ scan["items"]|length }} libros. Corrige lo que haga falta y desmarca los que no quieras agregar.
+     Los que ya están en el catálogo vienen desmarcados.</p>
+  <form method="post" action="/scan/{{ scan.id }}">
+    <label>Estante <input name="shelf" value="{{ scan.shelf }}" placeholder="Ej: Living, repisa 2"></label>
+    <ul class="review">
+      {% for item in scan["items"] %}
+      {% set i = loop.index0 %}
+      <li class="conf-{{ item.confidence }}{% if item.duplicate_id %} dup{% endif %}">
+        <input type="checkbox" name="add_{{ i }}" value="1" {% if not item.duplicate_id and item.confidence != 'low' %}checked{% endif %} aria-label="Agregar">
+        {% if item.cover_url %}<img src="{{ item.cover_url }}" alt="" loading="lazy">{% else %}<div class="nocover small"></div>{% endif %}
+        <div class="grow stack tight">
+          <input name="title_{{ i }}" value="{{ item.title }}" aria-label="Título">
+          <input name="author_{{ i }}" value="{{ item.author }}" aria-label="Autor" placeholder="Autor">
+          <span class="muted small">
+            {% if item.duplicate_id %}<a href="/books/{{ item.duplicate_id }}">Ya está en el catálogo</a> · {% endif %}
+            {% if item.confidence == 'low' %}Lectura dudosa · {% elif item.confidence == 'medium' %}Lectura parcial · {% endif %}
+            {% if item.matched %}Open Library: {{ item.ol_title }}{% if item.ol_author %}, {{ item.ol_author }}{% endif %}{% if item.year %} ({{ item.year }}){% endif %}{% else %}Sin coincidencia en Open Library{% endif %}
+          </span>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    <button class="btn primary">Agregar marcados</button>
+    <a href="/scan">Descartar y sacar otra foto</a>
+  </form>
+</section>
+{% endblock %}
