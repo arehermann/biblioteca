@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h1>¿Cuál edición tienes?</h1>
+  <p><a href="/books/{{ book.id }}">← {{ book.title }}</a>{% if book.author %}, {{ book.author }}{% endif %}</p>
+  <p class="muted">Ediciones registradas en Open Library, primero las que tienen portada. Toca la tuya para guardar su portada, editorial, año e ISBN.</p>
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  {% if not editions and not error %}
+    <p>No se encontraron ediciones. Puedes escribir la editorial y la edición a mano, y pegar una URL de portada en el libro.</p>
+  {% endif %}
+  <ul class="grid editions">
+    {% for e in editions %}
+    <li>
+      <form method="post" action="/books/{{ book.id }}/ediciones">
+        {% for k in ('cover_url', 'isbn', 'publisher', 'edition', 'year') %}<input type="hidden" name="{{ k }}" value="{{ e[k] or '' }}">{% endfor %}
+        <button class="book edition-pick{% if e.isbn and e.isbn == book.isbn %} current{% endif %}">
+          {% if e.cover_url %}<img src="{{ e.cover_url }}" alt="" loading="lazy">{% else %}<div class="nocover">Sin portada</div>{% endif %}
+          <strong>{{ e.publisher or 'Editorial desconocida' }}</strong>
+          <span class="muted">{{ e.year or '' }}{% if e.edition %} · {{ e.edition }}{% endif %}</span>
+          {% if e.isbn %}<span class="muted small">ISBN {{ e.isbn }}</span>{% endif %}
+          {% if e.isbn and e.isbn == book.isbn %}<span class="tag">La que tienes registrada</span>{% endif %}
+        </button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}

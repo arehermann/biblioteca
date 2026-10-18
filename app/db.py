@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS books (
     author TEXT NOT NULL DEFAULT '',
     isbn TEXT NOT NULL DEFAULT '',
     publisher TEXT NOT NULL DEFAULT '',
+    edition TEXT NOT NULL DEFAULT '',
     year INTEGER,
     cover_url TEXT NOT NULL DEFAULT '',
     shelf TEXT NOT NULL DEFAULT '',
@@ -30,9 +31,20 @@ CREATE TABLE IF NOT EXISTS books (
     match_key TEXT NOT NULL DEFAULT '',
     added_by TEXT NOT NULL DEFAULT '',
     cover_checked INTEGER NOT NULL DEFAULT 0,
+    cover_manual INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS books_match_key ON books(match_key);
+CREATE TABLE IF NOT EXISTS loans (
+    id INTEGER PRIMARY KEY,
+    book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    person TEXT NOT NULL,
+    lent_on TEXT NOT NULL DEFAULT (date('now', 'localtime')),
+    returned_on TEXT,
+    notes TEXT NOT NULL DEFAULT '',
+    lent_by TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS loans_book ON loans(book_id);
 CREATE TABLE IF NOT EXISTS scans (
     id INTEGER PRIMARY KEY,
     shelf TEXT NOT NULL DEFAULT '',
@@ -43,12 +55,22 @@ CREATE TABLE IF NOT EXISTS scans (
 );
 """
 
-BOOK_FIELDS = ("title", "author", "isbn", "publisher", "year", "cover_url", "shelf", "library", "notes", "source")
+BOOK_FIELDS = ("title", "author", "isbn", "publisher", "edition", "year", "cover_url", "shelf", "library", "notes",
+               "source")
 
 # Columns added after the first release; init_db adds them to existing databases.
 MIGRATIONS = {
-    "books": {"library": "TEXT NOT NULL DEFAULT 'Principal'"},
+    "books": {
+        "library": "TEXT NOT NULL DEFAULT 'Principal'",
+        "edition": "TEXT NOT NULL DEFAULT ''",
+        "cover_manual": "INTEGER NOT NULL DEFAULT 0",
+    },
     "scans": {"library": "TEXT NOT NULL DEFAULT 'Principal'"},
+}
+# Run once, right after the column is added to an existing database.
+AFTER_MIGRATION = {
+    # Covers used to come from the work, not the edition; recheck every book with an ISBN by its exact edition.
+    ("books", "edition"): "UPDATE books SET cover_checked = 0 WHERE isbn != ''",
 }
 
 
@@ -65,6 +87,8 @@ def init_db() -> None:
             for name, decl in columns.items():
                 if name not in existing:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+                    if (table, name) in AFTER_MIGRATION:
+                        conn.execute(AFTER_MIGRATION[(table, name)])
         conn.execute("CREATE INDEX IF NOT EXISTS books_library ON books(library)")
 
 
@@ -76,6 +100,7 @@ def clean_library(value: str | None) -> str:
 def connect():
     conn = sqlite3.connect(db_path())
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     try:
         yield conn
         conn.commit()
@@ -108,9 +133,9 @@ def add_book(conn, book: dict, added_by: str = "") -> int:
     values["author"] = values["author"].strip()
     values["library"] = clean_library(values["library"])
     cur = conn.execute(
-        "INSERT INTO books (title, author, isbn, publisher, year, cover_url, shelf, library, notes, source, match_key,"
-        " added_by) VALUES (:title, :author, :isbn, :publisher, :year, :cover_url, :shelf, :library, :notes, :source,"
-        " :mk, :added_by)",
+        "INSERT INTO books (title, author, isbn, publisher, edition, year, cover_url, shelf, library, notes, source,"
+        " match_key, added_by) VALUES (:title, :author, :isbn, :publisher, :edition, :year, :cover_url, :shelf,"
+        " :library, :notes, :source, :mk, :added_by)",
         {**values, "mk": match_key(values["title"], values["author"]), "added_by": added_by},
     )
     return cur.lastrowid
@@ -120,7 +145,7 @@ def update_book(conn, book_id: int, book: dict) -> None:
     values = {f: book.get(f, "") for f in BOOK_FIELDS if f != "source"}
     values["library"] = clean_library(values["library"])
     conn.execute(
-        "UPDATE books SET title=:title, author=:author, isbn=:isbn, publisher=:publisher, year=:year,"
+        "UPDATE books SET title=:title, author=:author, isbn=:isbn, publisher=:publisher, edition=:edition, year=:year,"
         " cover_url=:cover_url, shelf=:shelf, library=:library, notes=:notes, match_key=:mk WHERE id=:id",
         {**values, "mk": match_key(values["title"], values["author"]), "id": book_id},
     )
@@ -147,3 +172,22 @@ def load_scan(conn, scan_id: int):
     if row is None:
         return None
     return {"id": row["id"], "shelf": row["shelf"], "library": row["library"], "items": json.loads(row["items"])}
+
+
+def active_loan(conn, book_id: int):
+    return conn.execute("SELECT * FROM loans WHERE book_id = ? AND returned_on IS NULL ORDER BY id DESC LIMIT 1",
+                        (book_id,)).fetchone()
+
+
+def lend(conn, book_id: int, person: str, lent_on: str, notes: str, lent_by: str) -> None:
+    if active_loan(conn, book_id) is None:
+        conn.execute("INSERT INTO loans (book_id, person, lent_on, notes, lent_by) VALUES (?, ?, ?, ?, ?)",
+                     (book_id, person.strip(), lent_on, notes.strip(), lent_by))
+
+
+def give_back(conn, loan_id: int, returned_on: str) -> None:
+    conn.execute("UPDATE loans SET returned_on = ? WHERE id = ? AND returned_on IS NULL", (returned_on, loan_id))
+
+
+def borrowers(conn) -> list[str]:
+    return [r[0] for r in conn.execute("SELECT person FROM loans GROUP BY person ORDER BY MAX(id) DESC")]

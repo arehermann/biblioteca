@@ -106,3 +106,18 @@ button.link { background: none; border: 0; color: var(--accent); font: inherit; 
 .movebar { position: sticky; bottom: 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center;
            background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px; margin-top: 12px; }
 .movebar[hidden] { display: none; }
+
+.cover-col { display: flex; flex-direction: column; gap: 8px; width: 160px; }
+.cover-col .btn { text-align: center; font-size: .9rem; }
+.nocover.cover { aspect-ratio: 2 / 3; }
+.loan-badge, .tag.lent { background: var(--warn); }
+.loan-badge { padding: 6px 10px; border-radius: 8px; margin: 0; font-size: .9rem; }
+.loans-box { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 12px; }
+.row-inline { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+.plain { padding-left: 18px; }
+.edition-pick { width: 100%; background: none; border: 2px solid transparent; border-radius: 8px; padding: 4px; text-align: left; cursor: pointer; font: inherit; }
+.edition-pick:hover, .edition-pick.current { border-color: var(--accent); }
+@media (max-width: 600px) {
+  .cover-col { width: 100%; display: grid; grid-template-columns: 110px 1fr; align-items: start; }
+  .cover-col .cover { width: 110px; grid-row: span 2; }
+}

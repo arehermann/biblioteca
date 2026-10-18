@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h1>Préstamos</h1>
+  {% if not active %}
+    <p>No hay libros prestados. Para prestar uno, ábrelo en el catálogo y completa “¿A quién?”.</p>
+  {% else %}
+    <p class="muted">{{ active|length }} {{ "libro prestado" if active|length == 1 else "libros prestados" }} ahora.</p>
+    <ul class="review">
+      {% for l in active %}
+      <li>
+        {% if l.cover_url %}<img src="{{ l.cover_url }}" alt="" loading="lazy">{% else %}<div class="nocover small"></div>{% endif %}
+        <div class="grow">
+          <a href="/books/{{ l.book_id }}"><strong>{{ l.title }}</strong></a>
+          <div class="muted small">{{ l.author }} · {{ l.library }}</div>
+          <div>A <strong>{{ l.person }}</strong> desde el {{ l.lent_on|fecha }} (hace {{ l.lent_on|dias }} días){% if l.notes %} · {{ l.notes }}{% endif %}</div>
+        </div>
+        <form method="post" action="/loans/{{ l.id }}/devolver"><button class="btn">Devuelto</button></form>
+      </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+</section>
+{% if history %}
+<section class="card">
+  <h2>Devueltos</h2>
+  <ul class="plain">
+    {% for l in history %}<li><a href="/books/{{ l.book_id }}">{{ l.title }}</a>: {{ l.person }}, {{ l.lent_on|fecha }} → {{ l.returned_on|fecha }}</li>{% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% endblock %}
