@@ -2,6 +2,7 @@
 {% block content %}
 {% set added = request.query_params.get('added') %}
 {% if added %}<p class="notice">Se agregaron {{ added }} libros.</p>{% endif %}
+{% if covers_running %}<p class="notice">Buscando portadas en Open Library: quedan {{ covers_left }} libros. Recarga para ver el avance.</p>{% endif %}
 <form class="filters" method="get" action="/">
   <input type="search" name="q" value="{{ q }}" placeholder="Buscar por título, autor o ISBN">
   <select name="shelf" onchange="this.form.submit()">

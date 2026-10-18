@@ -1,7 +1,9 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app import auth, db, lookup, main, storygraph, vision
+import asyncio
+
+from app import auth, covers, db, lookup, main, storygraph, vision
 
 CSV = (
     "Title,Authors,Contributors,ISBN/UID,Format,Read Status,Owned?\n"
@@ -18,7 +20,7 @@ def client(tmp_path, monkeypatch):
     with db.connect() as conn:
         auth.create_user(conn, "anya", "secreta123")
 
-    async def no_lookup(items, concurrency=4):
+    async def no_lookup(items, **kwargs):
         return [None] * len(items)
 
     monkeypatch.setattr(lookup, "lookup_many", no_lookup)
@@ -143,3 +145,54 @@ def test_goodreads_nothing_owned_explains(client):
     csv_none = GOODREADS.replace(b",1\n", b",0\n")
     r = client.post("/import", files={"file": ("gr.csv", csv_none, "text/csv")}, data={"only_owned": "1"})
     assert "Ningún libro del archivo estaba marcado como tuyo" in r.text
+
+
+def test_cover_batch_retries_when_open_library_fails(client, monkeypatch):
+    with db.connect() as conn:
+        for t in ("Ficciones", "Rayuela", "Libro raro"):
+            db.add_book(conn, {"title": t, "author": "X"})
+
+    async def flaky(items, **kwargs):
+        out = []
+        for item in items:
+            if item["title"] == "Ficciones":
+                out.append({"cover_url": "https://covers/1.jpg", "isbn": "9780802130303", "year": 1944, "publisher": "Sur"})
+            elif item["title"] == "Rayuela":
+                out.append(lookup.LookupFailed("timeout"))
+            else:
+                out.append(None)
+        return out
+
+    monkeypatch.setattr(lookup, "lookup_many", flaky)
+    processed, failed = asyncio.run(covers.fill_batch())
+    assert (processed, failed) == (3, True)
+    with db.connect() as conn:
+        rows = {r["title"]: r for r in conn.execute("SELECT * FROM books")}
+    assert rows["Ficciones"]["cover_url"] == "https://covers/1.jpg" and rows["Ficciones"]["isbn"] == "9780802130303"
+    assert rows["Rayuela"]["cover_checked"] == 0  # retried later, not given up on
+    assert rows["Libro raro"]["cover_checked"] == 1 and rows["Libro raro"]["cover_url"] == ""
+    assert covers.remaining() == 1
+
+
+def test_lookup_falls_back_from_isbn_to_title_and_raises_on_errors():
+    import httpx
+
+    calls = []
+
+    def handler(request):
+        calls.append(dict(request.url.params))
+        if "isbn" in request.url.params:
+            return httpx.Response(200, json={"docs": []})
+        return httpx.Response(200, json={"docs": [{"title": "Ficciones", "author_name": ["Borges"], "cover_i": 7,
+                                                    "isbn": ["0802130305", "9780802130303"]}]})
+
+    async def run(h):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(h)) as c:
+            return await lookup.lookup(c, "Ficciones", "Borges", "9789875666474")
+
+    meta = asyncio.run(run(handler))
+    assert meta["cover_url"].endswith("/7-M.jpg") and meta["isbn"] == "9780802130303"
+    assert "isbn" in calls[0] and calls[1]["title"] == "Ficciones"
+
+    with pytest.raises(lookup.LookupFailed):
+        asyncio.run(run(lambda r: httpx.Response(503)))

@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import auth, db, lookup, storygraph, vision
+from . import auth, covers, db, lookup, storygraph, vision
 
 BASE = Path(__file__).parent
 PAGE_SIZE = 60
@@ -19,6 +19,7 @@ PUBLIC_PATHS = ("/login", "/static")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
+    covers.start()  # picks up books left without a cover by an earlier run
     yield
 
 
@@ -45,6 +46,13 @@ app.add_middleware(
 
 def render(request: Request, name: str, **ctx):
     return templates.TemplateResponse(request, name, {"user": request.session.get("user"), **ctx})
+
+
+def render_import(request: Request, result=None):
+    with db.connect() as conn:
+        no_cover = conn.execute("SELECT COUNT(*) FROM books WHERE cover_url = '' AND cover_checked = 1").fetchone()[0]
+    return render(request, "import.html", result=result, covers_left=covers.remaining(),
+                  covers_running=covers.is_running(), no_cover=no_cover)
 
 
 def back(url: str) -> RedirectResponse:
@@ -113,7 +121,8 @@ def catalog(request: Request, q: str = "", shelf: str = "", page: int = 1):
         ).fetchall()
         all_count = conn.execute("SELECT COUNT(*) FROM books").fetchone()[0]
         shelf_list = shelves(conn)
-    return render(request, "catalog.html", books=books, total=total, all_count=all_count, q=q, shelf=shelf,
+    return render(request, "catalog.html", covers_running=covers.is_running(), covers_left=covers.remaining(),
+                  books=books, total=total, all_count=all_count, q=q, shelf=shelf,
                   shelves=shelf_list, page=page, pages=max(1, -(-total // PAGE_SIZE)))
 
 
@@ -230,7 +239,7 @@ async def save_scan(request: Request, scan_id: int):
 
 @app.get("/import", response_class=HTMLResponse)
 def import_page(request: Request):
-    return render(request, "import.html", result=None)
+    return render_import(request)
 
 
 @app.post("/import", response_class=HTMLResponse)
@@ -246,31 +255,21 @@ async def import_csv(request: Request, file: UploadFile = File(...), only_owned:
                 continue
             db.add_book(conn, book, request.session["user"])
             added += 1
+    if added:
+        covers.start()
     result = {"added": added, "duplicates": duplicates, "skipped": skipped_not_owned,
               "owned_missing": bool(only_owned) and not owned_filter}
-    return render(request, "import.html", result=result)
+    return render_import(request, result)
 
 
 @app.post("/covers")
-async def fill_covers(request: Request):
-    """Looks up missing covers/ISBNs on Open Library, a batch at a time so the Pi stays responsive."""
-    with db.connect() as conn:
-        rows = conn.execute(
-            "SELECT id, title, author, isbn FROM books WHERE cover_url = '' AND cover_checked = 0 LIMIT 40").fetchall()
-    metas = await lookup.lookup_many([dict(r) for r in rows])
-    with db.connect() as conn:
-        for row, meta in zip(rows, metas):
-            if meta and meta["cover_url"]:
-                conn.execute(
-                    "UPDATE books SET cover_checked = 1, cover_url = ?, isbn = CASE WHEN isbn = '' THEN ? ELSE isbn END,"
-                    " year = COALESCE(year, ?), publisher = CASE WHEN publisher = '' THEN ? ELSE publisher END"
-                    " WHERE id = ?",
-                    (meta["cover_url"], meta["isbn"], meta["year"], meta["publisher"], row["id"]))
-            else:
-                # Mark it so the next batch moves on instead of retrying the same books.
-                conn.execute("UPDATE books SET cover_checked = 1 WHERE id = ?", (row["id"],))
-        remaining = conn.execute("SELECT COUNT(*) FROM books WHERE cover_url = '' AND cover_checked = 0").fetchone()[0]
-    return back(f"/import?covers_left={remaining}")
+async def fill_covers(retry: str = Form("")):
+    if retry:
+        # Books looked up before without a match get another chance (e.g. after Open Library was down).
+        with db.connect() as conn:
+            conn.execute("UPDATE books SET cover_checked = 0 WHERE cover_url = ''")
+    covers.start()
+    return back("/import")
 
 
 @app.get("/export.csv")
