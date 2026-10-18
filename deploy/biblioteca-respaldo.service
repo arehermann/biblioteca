@@ -1,0 +1,8 @@
+[Unit]
+Description=Respaldo diario de la Biblioteca
+
+[Service]
+Type=oneshot
+User=pi
+WorkingDirectory=/home/pi/biblioteca
+ExecStart=/home/pi/biblioteca/.venv/bin/python manage.py respaldo

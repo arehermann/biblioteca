@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+{% set covers_left = request.query_params.get('covers_left') %}
+<section class="card narrow">
+  <h1>Importar desde StoryGraph</h1>
+  {% if result %}
+    <p class="notice">Se importaron {{ result.added }} libros.
+      {% if result.duplicates %}{{ result.duplicates }} ya estaban en el catálogo.{% endif %}
+      {% if result.skipped %}{{ result.skipped }} no estaban marcados como tuyos y se omitieron.{% endif %}</p>
+    {% if result.owned_missing %}<p class="error">El archivo no tiene la columna “Owned?”, así que se importaron todos los libros.</p>{% endif %}
+  {% endif %}
+  <ol>
+    <li>En StoryGraph entra a <em>Manage Account</em> y elige <em>Export StoryGraph Library</em>.</li>
+    <li>Descarga el CSV que te envían y súbelo aquí.</li>
+  </ol>
+  <form method="post" action="/import" enctype="multipart/form-data" class="stack">
+    <label>Archivo CSV <input type="file" name="file" accept=".csv,text/csv" required></label>
+    <label class="check"><input type="checkbox" name="only_owned" value="1" checked> Solo los libros marcados como míos (“Owned”)</label>
+    <button class="btn primary">Importar</button>
+  </form>
+</section>
+<section class="card narrow">
+  <h2>Portadas</h2>
+  <p>Busca en Open Library las portadas que faltan, de a 40 libros por vez.</p>
+  {% if covers_left is not none %}<p class="notice">Quedan {{ covers_left }} libros por revisar.</p>{% endif %}
+  <form method="post" action="/covers"><button class="btn">Buscar portadas</button></form>
+</section>
+{% endblock %}

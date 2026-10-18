@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card narrow">
+  <h1>Foto de estante</h1>
+  <p>Saca una foto de una repisa con los lomos bien iluminados y derechos. Funciona mejor con una repisa por foto.</p>
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  <form method="post" action="/scan" enctype="multipart/form-data" class="stack" onsubmit="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Leyendo lomos… puede tardar un minuto';">
+    <label>Foto <input type="file" name="photo" accept="image/*" capture="environment" required></label>
+    <label>Estante (opcional) <input name="shelf" list="shelves" placeholder="Ej: Living, repisa 2"></label>
+    <datalist id="shelves">{% for s in shelves %}<option value="{{ s }}">{% endfor %}</datalist>
+    <button class="btn primary">Leer libros</button>
+  </form>
+</section>
+{% endblock %}
