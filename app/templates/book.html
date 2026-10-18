@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_library.html" import library_picker with context %}
 {% block content %}
 <section class="card">
   {% if saved %}<p class="notice">Guardado.</p>{% endif %}
@@ -13,6 +14,7 @@
         <label>Año <input name="year" value="{{ book.year or '' if book else '' }}" inputmode="numeric"></label>
       </div>
       <label>Editorial <input name="publisher" value="{{ book.publisher if book else '' }}"></label>
+      {{ library_picker(library) }}
       <label>Estante <input name="shelf" value="{{ book.shelf if book else '' }}" list="shelves" placeholder="Ej: Living, repisa 2"></label>
       <datalist id="shelves">{% for s in shelves %}<option value="{{ s }}">{% endfor %}</datalist>
       <label>Notas <textarea name="notes" rows="3">{{ book.notes if book else '' }}</textarea></label>

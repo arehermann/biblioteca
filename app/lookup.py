@@ -25,32 +25,39 @@ def _to_meta(doc: dict) -> dict:
     }
 
 
-async def lookup(client: httpx.AsyncClient, title: str, author: str = "", isbn: str = "") -> dict | None:
-    params = {"fields": FIELDS, "limit": 1}
-    if isbn:
-        params["isbn"] = isbn
-    else:
-        params["title"] = title
-        if author:
-            params["author"] = author
+class LookupFailed(Exception):
+    """Open Library could not be reached or answered with an error."""
+
+
+async def _search(client: httpx.AsyncClient, **query) -> list[dict]:
     try:
-        r = await client.get(SEARCH_URL, params=params, timeout=15)
+        r = await client.get(SEARCH_URL, params={"fields": FIELDS, "limit": 1, **query}, timeout=15)
         r.raise_for_status()
-        docs = r.json().get("docs", [])
-        if not docs and author and not isbn:
+        return r.json().get("docs", [])
+    except (httpx.HTTPError, ValueError) as e:
+        raise LookupFailed(str(e)) from e
+
+
+async def lookup(client: httpx.AsyncClient, title: str, author: str = "", isbn: str = "") -> dict | None:
+    """Returns metadata, or None when Open Library has no match. Raises LookupFailed on network errors."""
+    docs = await _search(client, isbn=isbn) if isbn else []
+    if not docs and title:
+        # Many local editions are missing from Open Library by ISBN; fall back to title and author.
+        docs = await _search(client, title=title, author=author) if author else []
+        if not docs:
             # Spine authors are often partial; retry with title only.
-            r = await client.get(SEARCH_URL, params={"fields": FIELDS, "limit": 1, "title": title}, timeout=15)
-            r.raise_for_status()
-            docs = r.json().get("docs", [])
-    except (httpx.HTTPError, ValueError):
-        return None
+            docs = await _search(client, title=title)
     return _to_meta(docs[0]) if docs else None
 
 
-async def lookup_many(items: list[dict], concurrency: int = 4) -> list[dict | None]:
+async def lookup_many(items: list[dict], concurrency: int = 4, strict: bool = False) -> list:
+    """Looks up each item. A failed lookup comes back as None, or as a LookupFailed instance when strict."""
     sem = asyncio.Semaphore(concurrency)
     async with httpx.AsyncClient(headers=HEADERS) as client:
         async def one(item):
             async with sem:
-                return await lookup(client, item.get("title", ""), item.get("author", ""), item.get("isbn", ""))
+                try:
+                    return await lookup(client, item.get("title", ""), item.get("author", ""), item.get("isbn", ""))
+                except LookupFailed as e:
+                    return e if strict else None
         return await asyncio.gather(*(one(i) for i in items))

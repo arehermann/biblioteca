@@ -1,10 +1,12 @@
 {% extends "base.html" %}
+{% from "_library.html" import library_picker with context %}
 {% block content %}
 <section class="card">
   <h1>Revisa los libros detectados</h1>
   <p>Se encontraron {{ scan["items"]|length }} libros. Corrige lo que haga falta y desmarca los que no quieras agregar.
      Los que ya están en el catálogo vienen desmarcados.</p>
   <form method="post" action="/scan/{{ scan.id }}">
+    {{ library_picker(scan.library) }}
     <label>Estante <input name="shelf" value="{{ scan.shelf }}" placeholder="Ej: Living, repisa 2"></label>
     <ul class="review">
       {% for item in scan["items"] %}
@@ -16,7 +18,7 @@
           <input name="title_{{ i }}" value="{{ item.title }}" aria-label="Título">
           <input name="author_{{ i }}" value="{{ item.author }}" aria-label="Autor" placeholder="Autor">
           <span class="muted small">
-            {% if item.duplicate_id %}<a href="/books/{{ item.duplicate_id }}">Ya está en el catálogo</a> · {% endif %}
+            {% if item.duplicate_id %}<a href="/books/{{ item.duplicate_id }}">Ya está en {{ scan.library }}</a> · {% endif %}
             {% if item.confidence == 'low' %}Lectura dudosa · {% elif item.confidence == 'medium' %}Lectura parcial · {% endif %}
             {% if item.matched %}Open Library: {{ item.ol_title }}{% if item.ol_author %}, {{ item.ol_author }}{% endif %}{% if item.year %} ({{ item.year }}){% endif %}{% else %}Sin coincidencia en Open Library{% endif %}
           </span>

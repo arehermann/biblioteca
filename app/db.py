@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 DATA_DIR = Path(os.environ.get("BIBLIOTECA_DATA", "./data"))
+LIBRARIES = ("Principal", "Niños")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -23,6 +24,7 @@ CREATE TABLE IF NOT EXISTS books (
     year INTEGER,
     cover_url TEXT NOT NULL DEFAULT '',
     shelf TEXT NOT NULL DEFAULT '',
+    library TEXT NOT NULL DEFAULT 'Principal',
     notes TEXT NOT NULL DEFAULT '',
     source TEXT NOT NULL DEFAULT 'manual',
     match_key TEXT NOT NULL DEFAULT '',
@@ -34,13 +36,20 @@ CREATE INDEX IF NOT EXISTS books_match_key ON books(match_key);
 CREATE TABLE IF NOT EXISTS scans (
     id INTEGER PRIMARY KEY,
     shelf TEXT NOT NULL DEFAULT '',
+    library TEXT NOT NULL DEFAULT 'Principal',
     items TEXT NOT NULL,
     created_by TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 """
 
-BOOK_FIELDS = ("title", "author", "isbn", "publisher", "year", "cover_url", "shelf", "notes", "source")
+BOOK_FIELDS = ("title", "author", "isbn", "publisher", "year", "cover_url", "shelf", "library", "notes", "source")
+
+# Columns added after the first release; init_db adds them to existing databases.
+MIGRATIONS = {
+    "books": {"library": "TEXT NOT NULL DEFAULT 'Principal'"},
+    "scans": {"library": "TEXT NOT NULL DEFAULT 'Principal'"},
+}
 
 
 def db_path() -> Path:
@@ -51,6 +60,16 @@ def init_db() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with connect() as conn:
         conn.executescript(SCHEMA)
+        for table, columns in MIGRATIONS.items():
+            existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+            for name, decl in columns.items():
+                if name not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+        conn.execute("CREATE INDEX IF NOT EXISTS books_library ON books(library)")
+
+
+def clean_library(value: str | None) -> str:
+    return value if value in LIBRARIES else LIBRARIES[0]
 
 
 @contextmanager
@@ -87,9 +106,11 @@ def add_book(conn, book: dict, added_by: str = "") -> int:
             values[f] = "manual" if f == "source" else ""
     values["title"] = values["title"].strip()
     values["author"] = values["author"].strip()
+    values["library"] = clean_library(values["library"])
     cur = conn.execute(
-        "INSERT INTO books (title, author, isbn, publisher, year, cover_url, shelf, notes, source, match_key, added_by)"
-        " VALUES (:title, :author, :isbn, :publisher, :year, :cover_url, :shelf, :notes, :source, :mk, :added_by)",
+        "INSERT INTO books (title, author, isbn, publisher, year, cover_url, shelf, library, notes, source, match_key,"
+        " added_by) VALUES (:title, :author, :isbn, :publisher, :year, :cover_url, :shelf, :library, :notes, :source,"
+        " :mk, :added_by)",
         {**values, "mk": match_key(values["title"], values["author"]), "added_by": added_by},
     )
     return cur.lastrowid
@@ -97,21 +118,26 @@ def add_book(conn, book: dict, added_by: str = "") -> int:
 
 def update_book(conn, book_id: int, book: dict) -> None:
     values = {f: book.get(f, "") for f in BOOK_FIELDS if f != "source"}
+    values["library"] = clean_library(values["library"])
     conn.execute(
         "UPDATE books SET title=:title, author=:author, isbn=:isbn, publisher=:publisher, year=:year,"
-        " cover_url=:cover_url, shelf=:shelf, notes=:notes, match_key=:mk WHERE id=:id",
+        " cover_url=:cover_url, shelf=:shelf, library=:library, notes=:notes, match_key=:mk WHERE id=:id",
         {**values, "mk": match_key(values["title"], values["author"]), "id": book_id},
     )
 
 
-def find_duplicate(conn, title: str, author: str):
+def find_duplicate(conn, title: str, author: str, library: str | None = None):
+    """Same book already catalogued; within one library when given, since a copy can sit in each."""
+    if library:
+        return conn.execute("SELECT * FROM books WHERE match_key = ? AND library = ? LIMIT 1",
+                            (match_key(title, author), library)).fetchone()
     return conn.execute("SELECT * FROM books WHERE match_key = ? LIMIT 1", (match_key(title, author),)).fetchone()
 
 
-def save_scan(conn, shelf: str, items: list, created_by: str) -> int:
+def save_scan(conn, shelf: str, items: list, created_by: str, library: str = LIBRARIES[0]) -> int:
     cur = conn.execute(
-        "INSERT INTO scans (shelf, items, created_by) VALUES (?, ?, ?)",
-        (shelf, json.dumps(items, ensure_ascii=False), created_by),
+        "INSERT INTO scans (shelf, library, items, created_by) VALUES (?, ?, ?, ?)",
+        (shelf, clean_library(library), json.dumps(items, ensure_ascii=False), created_by),
     )
     return cur.lastrowid
 
@@ -120,4 +146,4 @@ def load_scan(conn, scan_id: int):
     row = conn.execute("SELECT * FROM scans WHERE id = ?", (scan_id,)).fetchone()
     if row is None:
         return None
-    return {"id": row["id"], "shelf": row["shelf"], "items": json.loads(row["items"])}
+    return {"id": row["id"], "shelf": row["shelf"], "library": row["library"], "items": json.loads(row["items"])}

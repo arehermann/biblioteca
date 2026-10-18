@@ -1,11 +1,11 @@
 {% extends "base.html" %}
+{% from "_library.html" import library_picker with context %}
 {% block content %}
-{% set covers_left = request.query_params.get('covers_left') %}
 <section class="card narrow">
   <h1>Importar desde StoryGraph o Goodreads</h1>
   {% if result %}
-    <p class="notice">Se importaron {{ result.added }} libros.
-      {% if result.duplicates %}{{ result.duplicates }} ya estaban en el catálogo.{% endif %}
+    <p class="notice">Se importaron {{ result.added }} libros a {{ library }}.
+      {% if result.duplicates %}{{ result.duplicates }} ya estaban en {{ library }}.{% endif %}
       {% if result.skipped %}{{ result.skipped }} no estaban marcados como tuyos y se omitieron.{% endif %}</p>
     {% if result.owned_missing %}<p class="error">El archivo no dice qué libros son tuyos, así que se importaron todos.</p>{% endif %}
     {% if result.skipped and not result.added and not result.duplicates %}<p class="error">Ningún libro del archivo estaba marcado como tuyo. Si no usabas esa marca, desmarca la opción de abajo y vuelve a importar.</p>{% endif %}
@@ -13,9 +13,10 @@
   <ol>
     <li>En StoryGraph entra a <em>Manage Account</em> y elige <em>Export StoryGraph Library</em>.</li>
     <li>En Goodreads entra a <em>My Books</em>, luego <em>Import and export</em> y elige <em>Export Library</em>.</li>
-    <li>Descarga el CSV y súbelo aquí. Si importas de los dos, los libros repetidos se saltan solos.</li>
+    <li>Elige a qué biblioteca van, descarga el CSV y súbelo aquí. Si importas de los dos, los libros repetidos se saltan solos.</li>
   </ol>
   <form method="post" action="/import" enctype="multipart/form-data" class="stack">
+    {{ library_picker(library) }}
     <label>Archivo CSV <input type="file" name="file" accept=".csv,text/csv" required></label>
     <label class="check"><input type="checkbox" name="only_owned" value="1" checked> Solo los libros marcados como míos (“Owned” en StoryGraph, “Owned Copies” en Goodreads)</label>
     <button class="btn primary">Importar</button>
@@ -23,8 +24,17 @@
 </section>
 <section class="card narrow">
   <h2>Portadas</h2>
-  <p>Busca en Open Library las portadas que faltan, de a 40 libros por vez.</p>
-  {% if covers_left is not none %}<p class="notice">Quedan {{ covers_left }} libros por revisar.</p>{% endif %}
-  <form method="post" action="/covers"><button class="btn">Buscar portadas</button></form>
+  {% if covers_running %}
+    <p class="notice">Buscando portadas en Open Library. Quedan {{ covers_left }} libros por revisar. Recarga la página para ver el avance.</p>
+  {% elif covers_left %}
+    <p>Hay {{ covers_left }} libros sin revisar. Si Open Library no respondió, se reintenta sola al reiniciar la app o con este botón.</p>
+    <form method="post" action="/covers"><button class="btn">Buscar portadas</button></form>
+  {% else %}
+    <p>Todas las portadas están revisadas.</p>
+  {% endif %}
+  {% if no_cover and not covers_running %}
+    <p class="muted">{{ no_cover }} libros no tienen portada en Open Library. Puedes pegar una URL de portada a mano en cada libro.</p>
+    <form method="post" action="/covers"><input type="hidden" name="retry" value="1"><button class="btn">Volver a buscar esas {{ no_cover }}</button></form>
+  {% endif %}
 </section>
 {% endblock %}
