@@ -4,7 +4,13 @@
 <section class="card">
   {% if saved %}<p class="notice">Guardado.</p>{% endif %}
   <div class="book-detail">
-    {% if book and book.cover_url %}<img src="{{ book.cover_url }}" alt="" class="cover">{% endif %}
+    {% if book %}
+    <div class="cover-col">
+      {% if book.cover_url %}<img src="{{ book.cover_url }}" alt="" class="cover">{% else %}<div class="nocover cover">{{ book.title[:40] }}</div>{% endif %}
+      <a href="/books/{{ book.id }}/ediciones" class="btn">Elegir edición y portada</a>
+      {% if loan %}<p class="loan-badge">Prestado a {{ loan.person }}</p>{% endif %}
+    </div>
+    {% endif %}
     <form method="post" action="{{ '/books/%d' % book.id if book else '/books/new' }}" class="stack grow">
       <h1>{{ book.title if book else 'Agregar libro' }}</h1>
       <label>Título <input name="title" value="{{ book.title if book else '' }}" required></label>
@@ -13,7 +19,10 @@
         <label>ISBN <input name="isbn" value="{{ book.isbn if book else '' }}" inputmode="numeric"></label>
         <label>Año <input name="year" value="{{ book.year or '' if book else '' }}" inputmode="numeric"></label>
       </div>
-      <label>Editorial <input name="publisher" value="{{ book.publisher if book else '' }}"></label>
+      <div class="row">
+        <label>Editorial <input name="publisher" value="{{ book.publisher if book else '' }}"></label>
+        <label>Edición <input name="edition" value="{{ book.edition if book else '' }}" placeholder="Ej: 2ª ed., bolsillo"></label>
+      </div>
       {{ library_picker(library) }}
       <label>Estante <input name="shelf" value="{{ book.shelf if book else '' }}" list="shelves" placeholder="Ej: Living, repisa 2"></label>
       <datalist id="shelves">{% for s in shelves %}<option value="{{ s }}">{% endfor %}</datalist>
@@ -23,6 +32,36 @@
     </form>
   </div>
   {% if book %}
+  <section class="loans-box">
+    <h2>Préstamo</h2>
+    {% if loan %}
+      <p>Prestado a <strong>{{ loan.person }}</strong> el {{ loan.lent_on|fecha }} (hace {{ loan.lent_on|dias }} días){% if loan.notes %} · {{ loan.notes }}{% endif %}.</p>
+      <form method="post" action="/loans/{{ loan.id }}/devolver" class="row-inline">
+        <input type="hidden" name="next" value="/books/{{ book.id }}">
+        <label>Devuelto el <input type="date" name="returned_on" value="{{ today }}"></label>
+        <button class="btn primary">Marcar devuelto</button>
+      </form>
+    {% else %}
+      <form method="post" action="/books/{{ book.id }}/prestar" class="stack">
+        <div class="row">
+          <label>¿A quién? <input name="person" list="borrowers" required placeholder="Nombre"></label>
+          <label>Fecha <input type="date" name="lent_on" value="{{ today }}"></label>
+        </div>
+        <datalist id="borrowers">{% for p in borrowers %}<option value="{{ p }}">{% endfor %}</datalist>
+        <label>Nota (opcional) <input name="notes" placeholder="Ej: se lo llevó a las vacaciones"></label>
+        <button class="btn">Prestar</button>
+      </form>
+    {% endif %}
+    {% set past = loans|selectattr('returned_on')|list %}
+    {% if past %}
+      <details>
+        <summary>Préstamos anteriores ({{ past|length }})</summary>
+        <ul class="plain">
+          {% for l in past %}<li>{{ l.person }}: {{ l.lent_on|fecha }} → {{ l.returned_on|fecha }}</li>{% endfor %}
+        </ul>
+      </details>
+    {% endif %}
+  </section>
   <p class="muted">Agregado por {{ book.added_by or '—' }} el {{ book.created_at[:10] }} · origen: {{ book.source }}</p>
   <form method="post" action="/books/{{ book.id }}/delete" onsubmit="return confirm('¿Borrar este libro del catálogo?')">
     <button class="btn danger">Borrar libro</button>

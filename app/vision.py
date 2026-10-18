@@ -11,7 +11,7 @@ MAX_SIDE = 2576
 
 PROMPT = """This is a photo of a bookshelf. Read every book spine you can see, left to right and top to bottom.
 
-For each book give the title and the author exactly as printed on the spine (keep the original language, fix only obvious OCR-style errors you are sure about). If the author is not visible, leave it empty. Skip objects that are not books.
+For each book give the title and the author exactly as printed on the spine (keep the original language, fix only obvious OCR-style errors you are sure about). If the author is not visible, leave it empty. Also give the publisher or imprint when it is printed on the spine (usually a name or logo near the bottom, e.g. "Anagrama", "Alfaguara", "Penguin"); leave it empty if you can't read it. Skip objects that are not books.
 
 confidence:
 - "high": title clearly legible
@@ -28,9 +28,10 @@ SCHEMA = {
                 "properties": {
                     "title": {"type": "string"},
                     "author": {"type": "string"},
+                    "publisher": {"type": "string"},
                     "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
                 },
-                "required": ["title", "author", "confidence"],
+                "required": ["title", "author", "publisher", "confidence"],
                 "additionalProperties": False,
             },
         }

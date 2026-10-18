@@ -17,6 +17,7 @@
         <div class="grow stack tight">
           <input name="title_{{ i }}" value="{{ item.title }}" aria-label="Título">
           <input name="author_{{ i }}" value="{{ item.author }}" aria-label="Autor" placeholder="Autor">
+          <input name="publisher_{{ i }}" value="{{ item.publisher }}" aria-label="Editorial" placeholder="Editorial">
           <span class="muted small">
             {% if item.duplicate_id %}<a href="/books/{{ item.duplicate_id }}">Ya está en {{ scan.library }}</a> · {% endif %}
             {% if item.confidence == 'low' %}Lectura dudosa · {% elif item.confidence == 'medium' %}Lectura parcial · {% endif %}

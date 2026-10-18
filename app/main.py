@@ -3,6 +3,7 @@ import io
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from datetime import date
 from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
@@ -27,6 +28,19 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Biblioteca", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
+
+
+def _fecha(iso: str | None) -> str:
+    """2026-10-18 -> 18/10/2026"""
+    return "/".join(reversed(iso[:10].split("-"))) if iso else ""
+
+
+def _dias(iso: str | None) -> int:
+    return (date.today() - date.fromisoformat(iso[:10])).days if iso else 0
+
+
+templates.env.filters["fecha"] = _fecha
+templates.env.filters["dias"] = _dias
 
 
 @app.middleware("http")
@@ -79,6 +93,7 @@ def form_book(form) -> dict:
         "author": (form.get("author") or "").strip(),
         "isbn": (form.get("isbn") or "").strip(),
         "publisher": (form.get("publisher") or "").strip(),
+        "edition": (form.get("edition") or "").strip(),
         "year": int(year) if year.isdigit() else None,
         "cover_url": (form.get("cover_url") or "").strip(),
         "shelf": (form.get("shelf") or "").strip(),
@@ -122,9 +137,11 @@ def logout(request: Request):
 # --- Catálogo -------------------------------------------------------------
 
 @app.get("/", response_class=HTMLResponse)
-def catalog(request: Request, q: str = "", shelf: str = "", library: str = "", page: int = 1):
+def catalog(request: Request, q: str = "", shelf: str = "", library: str = "", lent: int = 0, page: int = 1):
     library = library if library in db.LIBRARIES else ""
     where, params = [], []
+    if lent:
+        where.append("id IN (SELECT book_id FROM loans WHERE returned_on IS NULL)")
     if library:
         where.append("library = ?")
         params.append(library)
@@ -139,7 +156,9 @@ def catalog(request: Request, q: str = "", shelf: str = "", library: str = "", p
     with db.connect() as conn:
         total = conn.execute(f"SELECT COUNT(*) FROM books {clause}", params).fetchone()[0]
         books = conn.execute(
-            f"SELECT * FROM books {clause} ORDER BY author COLLATE NOCASE, title COLLATE NOCASE LIMIT ? OFFSET ?",
+            f"SELECT books.*, (SELECT person FROM loans WHERE loans.book_id = books.id AND returned_on IS NULL"
+            f" ORDER BY loans.id DESC LIMIT 1) AS lent_to"
+            f" FROM books {clause} ORDER BY author COLLATE NOCASE, title COLLATE NOCASE LIMIT ? OFFSET ?",
             params + [PAGE_SIZE, (page - 1) * PAGE_SIZE],
         ).fetchall()
         all_count = conn.execute("SELECT COUNT(*) FROM books").fetchone()[0]
@@ -147,6 +166,7 @@ def catalog(request: Request, q: str = "", shelf: str = "", library: str = "", p
         shelf_list = shelves(conn, library)
     return render(request, "catalog.html", covers_running=covers.is_running(), covers_left=covers.remaining(),
                   books=books, total=total, all_count=all_count, q=q, shelf=shelf, library=library, counts=counts,
+                  lent=lent,
                   shelves=shelf_list, page=page, pages=max(1, -(-total // PAGE_SIZE)))
 
 
@@ -176,7 +196,7 @@ async def new_book(request: Request):
     if not book["cover_url"]:
         meta = (await lookup.lookup_many([book]))[0]
         if meta:
-            for k in ("isbn", "publisher", "year", "cover_url"):
+            for k in ("isbn", "publisher", "edition", "year", "cover_url"):
                 book[k] = book[k] or meta[k]
     with db.connect() as conn:
         book_id = db.add_book(conn, book, request.session["user"])
@@ -189,16 +209,102 @@ def book_page(request: Request, book_id: int, saved: int = 0):
         book = conn.execute("SELECT * FROM books WHERE id = ?", (book_id,)).fetchone()
         if book is None:
             return back("/")
-        return render(request, "book.html", book=book, shelves=shelves(conn), saved=saved, library=book["library"])
+        loans = conn.execute("SELECT * FROM loans WHERE book_id = ? ORDER BY id DESC", (book_id,)).fetchall()
+        return render(request, "book.html", book=book, shelves=shelves(conn), saved=saved, library=book["library"],
+                      loan=db.active_loan(conn, book_id), loans=loans, borrowers=db.borrowers(conn),
+                      today=date.today().isoformat())
 
 
 @app.post("/books/{book_id}")
 async def edit_book(request: Request, book_id: int):
     book = form_book(await request.form())
-    if book["title"]:
-        with db.connect() as conn:
-            db.update_book(conn, book_id, book)
+    if not book["title"]:
+        return back(f"/books/{book_id}")
+    recheck = False
+    with db.connect() as conn:
+        old = conn.execute("SELECT isbn, cover_url, cover_manual FROM books WHERE id = ?", (book_id,)).fetchone()
+        if old is None:
+            return back("/")
+        db.update_book(conn, book_id, book)
+        if book["cover_url"] != old["cover_url"]:
+            # A cover typed in by hand wins; clearing the field hands it back to the automatic search.
+            manual = 1 if book["cover_url"] else 0
+            conn.execute("UPDATE books SET cover_manual = ?, cover_checked = ? WHERE id = ?",
+                         (manual, manual, book_id))
+            recheck = not manual
+        elif book["isbn"] != old["isbn"] and not old["cover_manual"]:
+            # Another ISBN is another edition, with its own cover.
+            conn.execute("UPDATE books SET cover_checked = 0 WHERE id = ?", (book_id,))
+            recheck = True
+    if recheck:
+        covers.start()
     return back(f"/books/{book_id}?saved=1")
+
+
+@app.get("/books/{book_id}/ediciones", response_class=HTMLResponse)
+async def editions_page(request: Request, book_id: int):
+    with db.connect() as conn:
+        book = conn.execute("SELECT * FROM books WHERE id = ?", (book_id,)).fetchone()
+    if book is None:
+        return back("/")
+    error = None
+    try:
+        found = await lookup.editions(book["title"], book["author"], book["isbn"])
+    except lookup.LookupFailed:
+        found, error = [], "Open Library no respondió. Vuelve a intentar en un rato."
+    return render(request, "editions.html", book=book, editions=found, error=error)
+
+
+@app.post("/books/{book_id}/ediciones")
+async def choose_edition(request: Request, book_id: int):
+    form = await request.form()
+    year = (form.get("year") or "").strip()
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE books SET cover_url = ?, isbn = CASE WHEN ? != '' THEN ? ELSE isbn END,"
+            " publisher = CASE WHEN ? != '' THEN ? ELSE publisher END, edition = ?, year = COALESCE(?, year),"
+            " cover_manual = 1, cover_checked = 1 WHERE id = ?",
+            (form.get("cover_url") or "", form.get("isbn") or "", form.get("isbn") or "",
+             form.get("publisher") or "", form.get("publisher") or "", form.get("edition") or "",
+             int(year) if year.isdigit() else None, book_id))
+    return back(f"/books/{book_id}?saved=1")
+
+
+# --- Préstamos ------------------------------------------------------------
+
+@app.post("/books/{book_id}/prestar")
+def lend_book(request: Request, book_id: int, person: str = Form(...), lent_on: str = Form(""),
+              notes: str = Form("")):
+    if person.strip():
+        with db.connect() as conn:
+            db.lend(conn, book_id, person, _iso_or_today(lent_on), notes, request.session["user"])
+    return back(f"/books/{book_id}")
+
+
+@app.post("/loans/{loan_id}/devolver")
+def return_book(loan_id: int, returned_on: str = Form(""), next: str = Form("/prestamos")):
+    with db.connect() as conn:
+        db.give_back(conn, loan_id, _iso_or_today(returned_on))
+    return back(next if next.startswith("/") and not next.startswith("//") else "/prestamos")
+
+
+@app.get("/prestamos", response_class=HTMLResponse)
+def loans_page(request: Request):
+    with db.connect() as conn:
+        active = conn.execute(
+            "SELECT loans.*, books.title, books.author, books.cover_url, books.library FROM loans"
+            " JOIN books ON books.id = loans.book_id WHERE returned_on IS NULL ORDER BY lent_on, loans.id").fetchall()
+        history = conn.execute(
+            "SELECT loans.*, books.title, books.author FROM loans JOIN books ON books.id = loans.book_id"
+            " WHERE returned_on IS NOT NULL ORDER BY returned_on DESC, loans.id DESC LIMIT 50").fetchall()
+    return render(request, "loans.html", active=active, history=history)
+
+
+def _iso_or_today(value: str) -> str:
+    try:
+        return date.fromisoformat(value.strip()).isoformat()
+    except ValueError:
+        return date.today().isoformat()
 
 
 @app.post("/books/{book_id}/delete")
@@ -243,7 +349,10 @@ async def scan(request: Request, camera: UploadFile | None = File(None), gallery
     with db.connect() as conn:
         for book, meta in zip(found, metas):
             dup = db.find_duplicate(conn, book["title"], book["author"], library)
-            items.append({**book, **(meta or {}), "matched": bool(meta), "duplicate_id": dup["id"] if dup else None})
+            item = {**book, **(meta or {}), "matched": bool(meta), "duplicate_id": dup["id"] if dup else None}
+            # The publisher printed on the spine describes the copy on the shelf better than a search match.
+            item["publisher"] = book.get("publisher") or (meta or {}).get("publisher", "")
+            items.append(item)
         scan_id = db.save_scan(conn, shelf.strip(), items, request.session["user"], library)
     return back(f"/scan/{scan_id}")
 
@@ -272,9 +381,10 @@ async def save_scan(request: Request, scan_id: int):
                 continue
             title = (form.get(f"title_{i}") or item["title"]).strip()
             author = (form.get(f"author_{i}") or item["author"]).strip()
+            publisher = (form.get(f"publisher_{i}") or "").strip()
             db.add_book(conn, {
                 "title": title, "author": author, "isbn": item.get("isbn", ""),
-                "publisher": item.get("publisher", ""), "year": item.get("year"),
+                "publisher": publisher, "edition": item.get("edition", ""), "year": item.get("year"),
                 "cover_url": item.get("cover_url", ""), "shelf": shelf, "library": library, "source": "foto",
             }, request.session["user"])
             added += 1
@@ -326,10 +436,14 @@ async def fill_covers(retry: str = Form("")):
 def export_csv():
     out = io.StringIO()
     writer = csv.writer(out)
-    cols = ["title", "author", "isbn", "publisher", "year", "library", "shelf", "notes", "added_by", "created_at"]
-    writer.writerow(cols)
+    cols = ["title", "author", "isbn", "publisher", "edition", "year", "library", "shelf", "notes", "added_by",
+            "created_at"]
+    writer.writerow(cols + ["lent_to", "lent_on"])
     with db.connect() as conn:
-        for row in conn.execute(f"SELECT {', '.join(cols)} FROM books ORDER BY library, author, title"):
+        for row in conn.execute(
+                f"SELECT {', '.join('books.' + c for c in cols)}, loans.person, loans.lent_on FROM books"
+                " LEFT JOIN loans ON loans.book_id = books.id AND loans.returned_on IS NULL"
+                " ORDER BY library, author, title"):
             writer.writerow(list(row))
     return Response(out.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": "attachment; filename=biblioteca.csv"})

@@ -1,4 +1,6 @@
-"""Fills in missing covers from Open Library in the background, a batch at a time so the Pi stays responsive."""
+"""Fills in covers from Open Library in the background, a batch at a time so the Pi stays responsive.
+
+Books with an ISBN get the cover of that exact edition; covers someone picked by hand are never replaced."""
 import asyncio
 import logging
 
@@ -15,14 +17,15 @@ def is_running() -> bool:
 
 def remaining() -> int:
     with db.connect() as conn:
-        return conn.execute("SELECT COUNT(*) FROM books WHERE cover_url = '' AND cover_checked = 0").fetchone()[0]
+        return conn.execute("SELECT COUNT(*) FROM books WHERE cover_checked = 0 AND cover_manual = 0").fetchone()[0]
 
 
 async def fill_batch() -> tuple[int, bool]:
     """Looks up one batch. Returns (books processed, whether Open Library failed)."""
     with db.connect() as conn:
         rows = [dict(r) for r in conn.execute(
-            "SELECT id, title, author, isbn FROM books WHERE cover_url = '' AND cover_checked = 0 LIMIT ?", (BATCH,))]
+            "SELECT id, title, author, isbn, publisher, cover_url FROM books"
+            " WHERE cover_checked = 0 AND cover_manual = 0 LIMIT ?", (BATCH,))]
     if not rows:
         return 0, False
     metas = await lookup.lookup_many(rows, strict=True)
@@ -36,9 +39,10 @@ async def fill_batch() -> tuple[int, bool]:
             if meta:
                 conn.execute(
                     "UPDATE books SET cover_checked = 1, cover_url = ?, isbn = CASE WHEN isbn = '' THEN ? ELSE isbn END,"
-                    " year = COALESCE(year, ?), publisher = CASE WHEN publisher = '' THEN ? ELSE publisher END"
-                    " WHERE id = ?",
-                    (meta["cover_url"], meta["isbn"], meta["year"], meta["publisher"], row["id"]))
+                    " year = COALESCE(year, ?), publisher = CASE WHEN publisher = '' THEN ? ELSE publisher END,"
+                    " edition = CASE WHEN edition = '' THEN ? ELSE edition END WHERE id = ?",
+                    (meta["cover_url"] or row["cover_url"], meta["isbn"], meta["year"], meta["publisher"],
+                     meta.get("edition", ""), row["id"]))
             else:
                 conn.execute("UPDATE books SET cover_checked = 1 WHERE id = ?", (row["id"],))
     return len(rows), failed

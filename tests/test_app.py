@@ -174,28 +174,143 @@ def test_cover_batch_retries_when_open_library_fails(client, monkeypatch):
     assert covers.remaining() == 1
 
 
-def test_lookup_falls_back_from_isbn_to_title_and_raises_on_errors():
+def _ol_handler(routes):
+    """Fake Open Library: maps a path to a JSON body (or a status code)."""
     import httpx
 
     calls = []
 
     def handler(request):
-        calls.append(dict(request.url.params))
-        if "isbn" in request.url.params:
-            return httpx.Response(200, json={"docs": []})
-        return httpx.Response(200, json={"docs": [{"title": "Ficciones", "author_name": ["Borges"], "cover_i": 7,
-                                                    "isbn": ["0802130305", "9780802130303"]}]})
+        calls.append((request.url.path, dict(request.url.params)))
+        body = routes.get(request.url.path, {"docs": []} if request.url.path == "/search.json" else 404)
+        if callable(body):
+            body = body(dict(request.url.params))
+        return httpx.Response(body, json={}) if isinstance(body, int) else httpx.Response(200, json=body)
+    return handler, calls
 
-    async def run(h):
-        async with httpx.AsyncClient(transport=httpx.MockTransport(h)) as c:
-            return await lookup.lookup(c, "Ficciones", "Borges", "9789875666474")
 
-    meta = asyncio.run(run(handler))
-    assert meta["cover_url"].endswith("/7-M.jpg") and meta["isbn"] == "9780802130303"
-    assert "isbn" in calls[0] and calls[1]["title"] == "Ficciones"
+def _run_lookup(handler, *args):
+    import httpx
 
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+            return await lookup.lookup(c, *args)
+    return asyncio.run(run())
+
+
+EDITION = {"title": "Ficciones", "publishers": ["Emecé"], "publish_date": "1956", "edition_name": "2a ed.",
+           "covers": [555], "isbn_10": ["9500404400"], "works": [{"key": "/works/OL1W"}], "key": "/books/OL9M"}
+WORK_DOC = {"key": "/works/OL1W", "title": "Ficciones", "author_name": ["Borges"], "cover_i": 7,
+            "isbn": ["0802130305", "9780802130303"], "publisher": ["Grove"]}
+
+
+def test_lookup_prefers_the_exact_edition_by_isbn():
+    handler, calls = _ol_handler({"/isbn/9500404400.json": EDITION, "/search.json": {"docs": [WORK_DOC]}})
+    meta = _run_lookup(handler, "Ficciones", "Borges", "9500404400")
+    assert meta["cover_url"].endswith("/555-M.jpg") and meta["publisher"] == "Emecé"
+    assert meta["edition"] == "2a ed." and meta["year"] == 1956
+    assert [c[0] for c in calls] == ["/isbn/9500404400.json"]
+
+
+def test_edition_without_cover_borrows_the_work_cover():
+    handler, _ = _ol_handler({"/isbn/9500404400.json": {**EDITION, "covers": [-1]},
+                              "/search.json": {"docs": [WORK_DOC]}})
+    meta = _run_lookup(handler, "Ficciones", "Borges", "9500404400")
+    assert meta["cover_url"].endswith("/7-M.jpg") and meta["publisher"] == "Emecé"
+
+
+def test_lookup_falls_back_to_title_and_uses_spine_publisher():
+    def search(params):
+        if "publisher" in params:
+            return {"docs": [{**WORK_DOC, "cover_i": 8}]}
+        return {"docs": []}
+
+    handler, calls = _ol_handler({"/search.json": search})
+    meta = _run_lookup(handler, "Ficciones", "Borges", "9789875666474", "Debolsillo")
+    assert meta["cover_url"].endswith("/8-M.jpg")
+    assert calls[0][0] == "/isbn/9789875666474.json" and calls[-1][1]["publisher"] == "Debolsillo"
+
+
+def test_lookup_raises_on_errors():
+    handler, _ = _ol_handler({"/search.json": 503})
     with pytest.raises(lookup.LookupFailed):
-        asyncio.run(run(lambda r: httpx.Response(503)))
+        _run_lookup(handler, "Ficciones")
+
+
+def test_editions_list_puts_covers_first(monkeypatch):
+    import httpx
+
+    editions = {"entries": [{**EDITION, "covers": [], "key": "/books/A", "publish_date": "2010"},
+                            {**EDITION, "key": "/books/B"}]}
+    handler, _ = _ol_handler({"/isbn/9500404400.json": EDITION, "/works/OL1W/editions.json": editions})
+    real = httpx.AsyncClient
+    monkeypatch.setattr(lookup.httpx, "AsyncClient",
+                        lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    found = asyncio.run(lookup.editions("Ficciones", "Borges", "9500404400"))
+    assert [e["edition_key"] for e in found] == ["/books/B", "/books/A"]
+
+
+def test_choose_edition_and_manual_cover_are_kept(client, monkeypatch):
+    login(client)
+    started = []
+    monkeypatch.setattr(covers, "start", lambda: started.append(1))
+    with db.connect() as conn:
+        book_id = db.add_book(conn, {"title": "Ficciones", "author": "Borges", "isbn": "0802130305"})
+    client.post(f"/books/{book_id}/ediciones", data={"cover_url": "https://covers/555.jpg", "isbn": "9500404400",
+                                                     "publisher": "Emecé", "edition": "2a ed.", "year": "1956"})
+    with db.connect() as conn:
+        b = conn.execute("SELECT * FROM books WHERE id = ?", (book_id,)).fetchone()
+    assert (b["cover_url"], b["isbn"], b["publisher"], b["edition"], b["year"], b["cover_manual"]) == \
+        ("https://covers/555.jpg", "9500404400", "Emecé", "2a ed.", 1956, 1)
+    assert covers.remaining() == 0  # a picked cover is never searched again
+
+    # Changing the ISBN of a book with an automatic cover sends it back to the cover search.
+    with db.connect() as conn:
+        other = db.add_book(conn, {"title": "Rayuela", "author": "Cortázar", "isbn": "1111111111"})
+        conn.execute("UPDATE books SET cover_checked = 1, cover_url = 'x' WHERE id = ?", (other,))
+    client.post(f"/books/{other}", data={"title": "Rayuela", "author": "Cortázar", "isbn": "2222222222",
+                                         "cover_url": "x", "library": "Principal"})
+    with db.connect() as conn:
+        assert conn.execute("SELECT cover_checked FROM books WHERE id = ?", (other,)).fetchone()[0] == 0
+    assert started
+
+
+def test_loans_flow(client):
+    login(client)
+    with db.connect() as conn:
+        book_id = db.add_book(conn, {"title": "Ficciones", "author": "Borges"})
+    client.post(f"/books/{book_id}/prestar", data={"person": "Tía Marta", "lent_on": "2026-10-01", "notes": "vacaciones"})
+    # Lending again while it is out does nothing.
+    client.post(f"/books/{book_id}/prestar", data={"person": "Otro"})
+    page = client.get(f"/books/{book_id}").text
+    assert "Prestado a <strong>Tía Marta</strong> el 01/10/2026" in page
+    assert "Prestado a Tía Marta" in client.get("/?lent=1").text
+    loans = client.get("/prestamos").text
+    assert "Tía Marta" in loans and "Otro" not in loans
+    assert "Tía Marta,2026-10-01" in client.get("/export.csv").text
+
+    with db.connect() as conn:
+        loan_id = db.active_loan(conn, book_id)["id"]
+    r = client.post(f"/loans/{loan_id}/devolver", data={"returned_on": "2026-10-15", "next": f"/books/{book_id}"},
+                    follow_redirects=False)
+    assert r.headers["location"] == f"/books/{book_id}"
+    page = client.get(f"/books/{book_id}").text
+    assert "Préstamos anteriores (1)" in page and "01/10/2026 → 15/10/2026" in page
+    assert "Ficciones" not in client.get("/?lent=1").text
+    # Suggests people lent to before.
+    assert '<option value="Tía Marta">' in page
+    r = client.post(f"/loans/{loan_id}/devolver", data={"next": "//evil.example"}, follow_redirects=False)
+    assert r.headers["location"] == "/prestamos"
+
+
+def test_deleting_a_book_removes_its_loans(client):
+    login(client)
+    with db.connect() as conn:
+        book_id = db.add_book(conn, {"title": "Ficciones"})
+        db.lend(conn, book_id, "Ana", "2026-10-01", "", "anya")
+    client.post(f"/books/{book_id}/delete")
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM loans").fetchone()[0] == 0
 
 
 def test_old_database_gets_library_column(tmp_path, monkeypatch):
@@ -210,12 +325,20 @@ def test_old_database_gets_library_column(tmp_path, monkeypatch):
                       " created_at TEXT NOT NULL DEFAULT (datetime('now')));"
                       "CREATE TABLE scans (id INTEGER PRIMARY KEY, shelf TEXT NOT NULL DEFAULT '', items TEXT NOT NULL,"
                       " created_by TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')));"
-                      "INSERT INTO books (title) VALUES ('Ficciones');")
+                      "INSERT INTO books (title, isbn, cover_url, cover_checked) VALUES ('Ficciones', '0802130305', 'x', 1);"
+                      "INSERT INTO books (title, cover_url, cover_checked) VALUES ('Sin ISBN', 'y', 1);")
     old.commit()
     old.close()
     db.init_db()
     with db.connect() as conn:
-        assert conn.execute("SELECT library FROM books").fetchone()[0] == "Principal"
+        rows = conn.execute("SELECT library, cover_checked FROM books ORDER BY id").fetchall()
+    assert [tuple(r) for r in rows] == [("Principal", 0), ("Principal", 1)]  # ISBN books recheck their edition
+    db.init_db()  # running again changes nothing
+    with db.connect() as conn:
+        conn.execute("UPDATE books SET cover_checked = 1")
+    db.init_db()
+    with db.connect() as conn:
+        assert conn.execute("SELECT MIN(cover_checked) FROM books").fetchone()[0] == 1
 
 
 def test_two_libraries_scan_import_move_and_filter(client, monkeypatch):

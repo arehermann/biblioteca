@@ -13,6 +13,7 @@
 </nav>
 <form class="filters" method="get" action="/">
   <input type="hidden" name="library" value="{{ library }}">
+  {% if lent %}<input type="hidden" name="lent" value="1">{% endif %}
   <input type="search" name="q" value="{{ q }}" placeholder="Buscar por título, autor o ISBN">
   <select name="shelf" onchange="this.form.submit()">
     <option value="">Todos los estantes</option>
@@ -22,6 +23,7 @@
 </form>
 <p class="muted">
   {{ total }} libros
+  · {% if lent %}<a href="/?library={{ library|urlencode }}">Ver todos</a>{% else %}<a href="/?library={{ library|urlencode }}&lent=1">Solo prestados</a>{% endif %}
   · <a href="/export.csv">Descargar CSV</a>
 </p>
 {% if not books %}
@@ -42,6 +44,7 @@
       {% if b.cover_url %}<img src="{{ b.cover_url }}" alt="" loading="lazy">{% else %}<div class="nocover">{{ b.title[:40] }}</div>{% endif %}
       <strong>{{ b.title }}</strong>
       <span class="muted">{{ b.author }}</span>
+      {% if b.lent_to %}<span class="tag lent">Prestado a {{ b.lent_to }}</span>{% endif %}
       {% if not library %}<span class="tag">{{ b.library }}</span>{% endif %}
       {% if b.shelf %}<span class="tag">{{ b.shelf }}</span>{% endif %}
     </a>
