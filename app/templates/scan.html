@@ -4,6 +4,7 @@
 {% block content %}
 <section class="card narrow">
   <h1>Foto de estante</h1>
+  {% include "_scan_tabs.html" %}
   <p>Una repisa por foto, con los lomos bien iluminados y derechos. Si la foto muestra otras repisas, recórtala en la galería y súbela desde ahí.</p>
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
   <form method="post" action="/scan" enctype="multipart/form-data" class="stack" id="scan-form">

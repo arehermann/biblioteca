@@ -21,11 +21,12 @@
   {% set path = request.url.path %}
   <nav class="dock" aria-label="Menú">
     <a href="/" class="dock-icon{% if path == '/' or path.startswith('/books') %} on{% endif %}" aria-label="Catálogo">{{ icon('book') }}</a>
-    <a href="/scan" class="dock-main{% if path.startswith('/scan') %} on{% endif %}">{{ icon('camera', 20) }}<span>Escanear</span></a>
+    <a href="/scan" class="dock-main{% if path.startswith('/scan') or path == '/isbn' %} on{% endif %}">{{ icon('camera', 20) }}<span>Escanear</span></a>
     <a href="/prestamos" class="dock-icon{% if path == '/prestamos' %} on{% endif %}" aria-label="Préstamos">{{ icon('loans') }}</a>
     <details class="more">
       <summary class="dock-icon" aria-label="Más opciones">{{ icon('more') }}</summary>
       <div class="menu">
+        <a href="/isbn">{{ icon('barcode', 18) }} Código de barras</a>
         <a href="/books/new">{{ icon('plus', 18) }} Agregar a mano</a>
         <a href="/import">{{ icon('upload', 18) }} Importar CSV</a>
         <a href="/export.csv">{{ icon('download', 18) }} Descargar CSV</a>

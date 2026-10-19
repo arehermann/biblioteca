@@ -140,3 +140,70 @@ async def editions(title: str, author: str = "", isbn: str = "", limit: int = 60
         data = await _get_json(client, f"{work_key}/editions.json", limit=limit) or {}
     found = [_edition_meta(e) for e in data.get("entries", [])]
     return sorted(found, key=lambda e: (not e["cover_url"], -(e["year"] or 0)))
+
+
+# --- Barcodes ----------------------------------------------------------------
+
+GOOGLE_BOOKS = "https://www.googleapis.com/books/v1/volumes"
+
+
+def clean_isbn(text: str) -> str:
+    """The ISBN-13 in a scanned or typed code, or "" when it is not a valid book ISBN."""
+    code = re.sub(r"[^0-9Xx]", "", text or "").upper()
+    if len(code) == 10 and code[:9].isdigit():
+        total = sum((10 - i) * (10 if c == "X" else int(c)) for i, c in enumerate(code))
+        if total % 11:
+            return ""
+        code = "978" + code[:9]
+        return code + str((10 - sum((3 if i % 2 else 1) * int(c) for i, c in enumerate(code)) % 10) % 10)
+    if len(code) == 13 and code.isdigit() and code[:3] in ("978", "979"):
+        check = (10 - sum((3 if i % 2 else 1) * int(c) for i, c in enumerate(code[:12])) % 10) % 10
+        return code if check == int(code[12]) else ""
+    return ""
+
+
+async def _google_books(client: httpx.AsyncClient, isbn: str) -> dict | None:
+    """Google Books knows many Spanish-language editions Open Library lacks. Best effort: errors mean no match."""
+    try:
+        r = await client.get(GOOGLE_BOOKS, params={"q": f"isbn:{isbn}"}, timeout=15)
+        items = r.json().get("items") if r.status_code == 200 else None
+    except (httpx.HTTPError, ValueError):
+        return None
+    if not items:
+        return None
+    info = items[0].get("volumeInfo", {})
+    cover = (info.get("imageLinks") or {}).get("thumbnail", "").replace("http://", "https://")
+    return {
+        "title": info.get("title", ""),
+        "author": ", ".join(info.get("authors", [])[:2]),
+        "publisher": info.get("publisher", ""),
+        "year": _year(info.get("publishedDate", "")),
+        "cover_url": cover,
+    }
+
+
+async def by_isbn(isbn: str) -> dict | None:
+    """Everything known about the edition with this ISBN, for adding a book from its barcode.
+
+    Open Library's edition record has the cover and publisher but names authors only by key, so the author comes
+    from its search; Google Books fills whatever Open Library leaves empty. Raises LookupFailed when Open Library
+    can't be reached."""
+    async with httpx.AsyncClient(headers=HEADERS) as client:
+        edition = await edition_by_isbn(client, isbn)
+        docs = await _search(client, isbn=isbn)
+        doc = _to_meta(docs[0]) if docs else {}
+        book = {
+            "title": (edition or {}).get("ol_title") or doc.get("ol_title", ""),
+            "author": doc.get("ol_author", ""),
+            "publisher": (edition or {}).get("publisher") or doc.get("publisher", ""),
+            "edition": (edition or {}).get("edition", ""),
+            "year": (edition or {}).get("year") or doc.get("year"),
+            "cover_url": (edition or {}).get("cover_url") or doc.get("cover_url", ""),
+        }
+        if not all(book[k] for k in ("title", "author", "publisher", "cover_url")):
+            google = await _google_books(client, isbn) or {}
+            for k, v in google.items():
+                book[k] = book[k] or v
+    if not book["title"]:
+        return None
+    return {**book, "isbn": isbn}

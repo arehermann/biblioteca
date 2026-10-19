@@ -265,3 +265,11 @@ button.link { background: none; border: 0; color: var(--accent); font: inherit; 
   .loan-card .row > :last-child { flex: 2; }
   .cat-head h1 { font-size: 1.6rem; }
 }
+
+/* --- Barcode ----------------------------------------------------------- */
+.scan-tabs { align-self: flex-start; margin: -4px 0 16px; width: fit-content; max-width: 100%; }
+.big-pick { flex-direction: row !important; min-height: 56px; font-size: 1.05rem; color: var(--on-accent) !important; cursor: pointer; }
+.found { display: flex; gap: 16px; align-items: center; margin-bottom: 16px; }
+.found .cover { width: 96px; flex: none; }
+.found h2 { font-size: 1.3rem; margin: 2px 0; }
+.found p { margin: 0; }

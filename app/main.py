@@ -206,7 +206,8 @@ def new_book_page(request: Request):
 
 @app.post("/books/new")
 async def new_book(request: Request):
-    book = form_book(await request.form())
+    form = await request.form()
+    book = form_book(form)
     remember_library(request, book["library"])
     if not book["title"]:
         return back("/books/new")
@@ -217,6 +218,9 @@ async def new_book(request: Request):
                 book[k] = book[k] or meta[k]
     with db.connect() as conn:
         book_id = db.add_book(conn, book, request.session["user"])
+    if form.get("next") == "/isbn":
+        # Adding from a barcode goes straight back to scan the next one.
+        return back(f"/isbn?added={book_id}")
     return back(f"/books/{book_id}?saved=1")
 
 
@@ -410,6 +414,45 @@ async def save_scan(request: Request, scan_id: int):
 
 
 # --- Importar y exportar --------------------------------------------------
+
+# --- Código de barras -------------------------------------------------------
+
+def isbn_form(request: Request, **ctx):
+    with db.connect() as conn:
+        return render(request, "isbn.html", library=current_library(request),
+                      shelves=shelves(conn, current_library(request)), **ctx)
+
+
+@app.get("/isbn", response_class=HTMLResponse)
+def isbn_page(request: Request, added: int = 0):
+    with db.connect() as conn:
+        added_book = conn.execute("SELECT id, title FROM books WHERE id = ?", (added,)).fetchone() if added else None
+    return isbn_form(request, added=added_book, shelf=request.session.get("isbn_shelf", ""))
+
+
+@app.post("/isbn", response_class=HTMLResponse)
+async def isbn_lookup(request: Request, isbn: str = Form(""), library: str = Form(""), shelf: str = Form("")):
+    library = remember_library(request, library)
+    shelf = shelf.strip()
+    request.session["isbn_shelf"] = shelf
+    code = lookup.clean_isbn(isbn)
+    if not code:
+        return isbn_form(request, isbn=isbn, shelf=shelf,
+                         error="Ese número no es un ISBN. Revisa que sea el código de barras que empieza con 978 o 979.")
+    with db.connect() as conn:
+        dup = conn.execute("SELECT id, title FROM books WHERE isbn = ? AND library = ?", (code, library)).fetchone()
+    if dup:
+        return isbn_form(request, isbn="", shelf=shelf, dup=dup)
+    error = None
+    try:
+        found = await lookup.by_isbn(code)
+    except lookup.LookupFailed:
+        found, error = None, "Open Library no respondió. Puedes completar los datos a mano."
+    if found is None:
+        found = {"title": "", "author": "", "publisher": "", "edition": "", "year": None, "cover_url": "", "isbn": code}
+        error = error or "No encontré este ISBN en Open Library ni en Google Books. Puedes completar los datos a mano."
+    return isbn_form(request, found=found, shelf=shelf, error=error)
+
 
 @app.get("/import", response_class=HTMLResponse)
 def import_page(request: Request):
