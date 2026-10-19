@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_library.html" import library_picker with context %}
+{% from "_icons.html" import icon %}
 {% block content %}
 <section class="card narrow">
   <h1>Foto de estante</h1>
@@ -8,8 +9,8 @@
   <form method="post" action="/scan" enctype="multipart/form-data" class="stack" id="scan-form">
     {{ library_picker(library) }}
     <div class="photo-pick">
-      <label class="btn"><input type="file" name="camera" accept="image/*" capture="environment" hidden> 📷 Sacar foto</label>
-      <label class="btn"><input type="file" name="gallery" accept="image/*" hidden> 🖼️ Elegir de la galería</label>
+      <label class="btn"><input type="file" name="camera" accept="image/*" capture="environment" hidden>{{ icon('camera', 20) }} Sacar foto</label>
+      <label class="btn"><input type="file" name="gallery" accept="image/*" hidden>{{ icon('image', 20) }} Elegir de la galería</label>
     </div>
     <img class="preview" alt="Foto elegida" hidden>
     <label>Estante (opcional) <input name="shelf" list="shelves" placeholder="Ej: Living, repisa 2"></label>

@@ -1,0 +1,19 @@
+{% from "_library.html" import library_picker with context %}
+<form method="post" action="{{ '/books/%d' % book.id if book else '/books/new' }}" class="stack">
+  <label>Título <input name="title" value="{{ book.title if book else '' }}" required></label>
+  <label>Autor <input name="author" value="{{ book.author if book else '' }}"></label>
+  <div class="row">
+    <label>Editorial <input name="publisher" value="{{ book.publisher if book else '' }}"></label>
+    <label>Edición <input name="edition" value="{{ book.edition if book else '' }}" placeholder="Ej: 2ª ed., bolsillo"></label>
+  </div>
+  <div class="row">
+    <label>ISBN <input name="isbn" value="{{ book.isbn if book else '' }}" inputmode="numeric"></label>
+    <label>Año <input name="year" value="{{ book.year or '' if book else '' }}" inputmode="numeric"></label>
+  </div>
+  {{ library_picker(library) }}
+  <label>Estante <input name="shelf" value="{{ book.shelf if book else '' }}" list="shelves" placeholder="Ej: Living, repisa 2"></label>
+  <datalist id="shelves">{% for s in shelves %}<option value="{{ s }}">{% endfor %}</datalist>
+  <label>Notas <textarea name="notes" rows="3">{{ book.notes if book else '' }}</textarea></label>
+  <label>URL de portada <input name="cover_url" value="{{ book.cover_url if book else '' }}" placeholder="Se busca sola si la dejas vacía"></label>
+  <button class="btn primary">Guardar</button>
+</form>

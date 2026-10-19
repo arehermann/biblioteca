@@ -16,6 +16,7 @@ from . import auth, covers, db, lookup, storygraph, vision
 
 BASE = Path(__file__).parent
 PAGE_SIZE = 60
+ALL = "todas"
 PUBLIC_PATHS = ("/login", "/static")
 
 @asynccontextmanager
@@ -59,8 +60,13 @@ app.add_middleware(
 )
 
 
+# Each library has its own look: dark "Noche" for the main one, colorful "Lúdica" for the kids'.
+THEMES = {db.LIBRARIES[0]: "noche", db.LIBRARIES[1]: "ludica"}
+
+
 def render(request: Request, name: str, **ctx):
-    return templates.TemplateResponse(request, name, {"user": request.session.get("user"),
+    theme = ctx.pop("theme", None) or THEMES[db.clean_library(ctx.get("library") or request.session.get("library"))]
+    return templates.TemplateResponse(request, name, {"user": request.session.get("user"), "theme": theme,
                                                       "libraries": db.LIBRARIES, **ctx})
 
 
@@ -138,7 +144,13 @@ def logout(request: Request):
 
 @app.get("/", response_class=HTMLResponse)
 def catalog(request: Request, q: str = "", shelf: str = "", library: str = "", lent: int = 0, page: int = 1):
-    library = library if library in db.LIBRARIES else ""
+    # Opens on the library you were last in; "todas" searches both.
+    if library in db.LIBRARIES:
+        remember_library(request, library)
+    elif library != ALL:
+        library = current_library(request)
+    if library == ALL:
+        library = ""
     where, params = [], []
     if lent:
         where.append("id IN (SELECT book_id FROM loans WHERE returned_on IS NULL)")
@@ -164,9 +176,14 @@ def catalog(request: Request, q: str = "", shelf: str = "", library: str = "", l
         all_count = conn.execute("SELECT COUNT(*) FROM books").fetchone()[0]
         counts = dict(conn.execute("SELECT library, COUNT(*) FROM books GROUP BY library").fetchall())
         shelf_list = shelves(conn, library)
+        out_where = "AND books.library = ?" if library else ""
+        out = conn.execute(
+            "SELECT loans.person, loans.lent_on, books.id, books.title, books.cover_url FROM loans"
+            f" JOIN books ON books.id = loans.book_id WHERE returned_on IS NULL {out_where}"
+            " ORDER BY lent_on, loans.id", [library] if library else []).fetchall()
     return render(request, "catalog.html", covers_running=covers.is_running(), covers_left=covers.remaining(),
                   books=books, total=total, all_count=all_count, q=q, shelf=shelf, library=library, counts=counts,
-                  lent=lent,
+                  lent=lent, out=out, lib_param=library or ALL, theme=None if library else "noche",
                   shelves=shelf_list, page=page, pages=max(1, -(-total // PAGE_SIZE)))
 
 

@@ -6,16 +6,16 @@
     <p>No hay libros prestados. Para prestar uno, ábrelo en el catálogo y completa “¿A quién?”.</p>
   {% else %}
     <p class="muted">{{ active|length }} {{ "libro prestado" if active|length == 1 else "libros prestados" }} ahora.</p>
-    <ul class="review">
+    <ul class="review loans">
       {% for l in active %}
       <li>
-        {% if l.cover_url %}<img src="{{ l.cover_url }}" alt="" loading="lazy">{% else %}<div class="nocover small"></div>{% endif %}
+        {% if l.cover_url %}<img src="{{ l.cover_url }}" alt="" loading="lazy">{% else %}<div class="nocover c{{ l.book_id % 6 }}"></div>{% endif %}
         <div class="grow">
           <a href="/books/{{ l.book_id }}"><strong>{{ l.title }}</strong></a>
           <div class="muted small">{{ l.author }} · {{ l.library }}</div>
-          <div>A <strong>{{ l.person }}</strong> desde el {{ l.lent_on|fecha }} (hace {{ l.lent_on|dias }} días){% if l.notes %} · {{ l.notes }}{% endif %}</div>
+          <div>A <strong>{{ l.person }}</strong> desde el {{ l.lent_on|fecha }} · <span class="days{% if (l.lent_on|dias) > 30 %} late{% endif %}">{{ l.lent_on|dias }} días</span>{% if l.notes %} · {{ l.notes }}{% endif %}</div>
         </div>
-        <form method="post" action="/loans/{{ l.id }}/devolver"><button class="btn">Devuelto</button></form>
+        <form method="post" action="/loans/{{ l.id }}/devolver"><button class="btn primary">Devuelto</button></form>
       </li>
       {% endfor %}
     </ul>

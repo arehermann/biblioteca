@@ -283,7 +283,7 @@ def test_loans_flow(client):
     # Lending again while it is out does nothing.
     client.post(f"/books/{book_id}/prestar", data={"person": "Otro"})
     page = client.get(f"/books/{book_id}").text
-    assert "Prestado a <strong>Tía Marta</strong> el 01/10/2026" in page
+    assert "<strong>Tía Marta</strong>" in page and "desde el 01/10/2026" in page
     assert "Prestado a Tía Marta" in client.get("/?lent=1").text
     loans = client.get("/prestamos").text
     assert "Tía Marta" in loans and "Otro" not in loans
@@ -359,13 +359,19 @@ def test_two_libraries_scan_import_move_and_filter(client, monkeypatch):
                     follow_redirects=False)
     assert "library=Ni%C3%B1os" in r.headers["location"]
 
+    # The scan remembered Niños, so the next form and the catalog start there, in the kids' look.
+    assert 'value="Niños" checked' in client.get("/scan").text
+    home = client.get("/").text
+    assert 'class="theme-ludica"' in home and "Donde viven los monstruos" in home
+
     ninos = client.get("/?library=Niños").text
     assert "Donde viven los monstruos" in ninos and "Left Hand" not in ninos
     principal = client.get("/?library=Principal").text
-    assert "Left Hand" in principal and "Donde viven" not in principal
-
-    # The scan remembered Niños, so the next form starts there.
-    assert 'value="Niños" checked' in client.get("/scan").text
+    assert "Left Hand" in principal and "Donde viven" not in principal and 'class="theme-noche"' in principal
+    # Browsing a library makes it the current one.
+    assert 'value="Principal" checked' in client.get("/scan").text
+    both = client.get("/?library=todas").text
+    assert "Left Hand" in both and "Donde viven" in both
 
     with db.connect() as conn:
         book_id = conn.execute("SELECT id FROM books WHERE title LIKE 'The Left Hand%'").fetchone()[0]
