@@ -116,5 +116,6 @@
   {{ total }} libros
   · {% if lent %}<a href="/?library={{ lib_q }}">Ver todos</a>{% else %}<a href="/?library={{ lib_q }}&lent=1">Solo prestados</a>{% endif %}
   {% if library %}· <a href="/?library=todas">Ver las dos bibliotecas</a>{% endif %}
+  {% if dup_count %}· <a href="/repetidos">{{ dup_count }} posibles repetidos</a>{% endif %}
 </p>
 {% endblock %}

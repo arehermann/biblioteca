@@ -176,6 +176,7 @@ def catalog(request: Request, q: str = "", shelf: str = "", library: str = "", l
         all_count = conn.execute("SELECT COUNT(*) FROM books").fetchone()[0]
         counts = dict(conn.execute("SELECT library, COUNT(*) FROM books GROUP BY library").fetchall())
         shelf_list = shelves(conn, library)
+        dup_count = len(db.duplicate_groups(conn))
         out_where = "AND books.library = ?" if library else ""
         out = conn.execute(
             "SELECT loans.person, loans.lent_on, books.id, books.title, books.cover_url FROM loans"
@@ -183,7 +184,7 @@ def catalog(request: Request, q: str = "", shelf: str = "", library: str = "", l
             " ORDER BY lent_on, loans.id", [library] if library else []).fetchall()
     return render(request, "catalog.html", covers_running=covers.is_running(), covers_left=covers.remaining(),
                   books=books, total=total, all_count=all_count, q=q, shelf=shelf, library=library, counts=counts,
-                  lent=lent, out=out, lib_param=library or ALL, theme=None if library else "noche",
+                  lent=lent, out=out, dup_count=dup_count, lib_param=library or ALL, theme=None if library else "noche",
                   shelves=shelf_list, page=page, pages=max(1, -(-total // PAGE_SIZE)))
 
 
@@ -224,8 +225,12 @@ async def new_book(request: Request):
     return back(f"/books/{book_id}?saved=1")
 
 
+# What a book's page says it is missing, and what filling it from a barcode can add.
+FIELD_NAMES = {"author": "autor", "isbn": "ISBN", "publisher": "editorial", "year": "año", "cover_url": "portada"}
+
+
 @app.get("/books/{book_id}", response_class=HTMLResponse)
-def book_page(request: Request, book_id: int, saved: int = 0):
+def book_page(request: Request, book_id: int, saved: int = 0, completed: str | None = None):
     with db.connect() as conn:
         book = conn.execute("SELECT * FROM books WHERE id = ?", (book_id,)).fetchone()
         if book is None:
@@ -233,7 +238,45 @@ def book_page(request: Request, book_id: int, saved: int = 0):
         loans = conn.execute("SELECT * FROM loans WHERE book_id = ? ORDER BY id DESC", (book_id,)).fetchall()
         return render(request, "book.html", book=book, shelves=shelves(conn), saved=saved, library=book["library"],
                       loan=db.active_loan(conn, book_id), loans=loans, borrowers=db.borrowers(conn),
-                      today=date.today().isoformat())
+                      today=date.today().isoformat(), completed=completed,
+                      missing=[name for f, name in FIELD_NAMES.items() if not book[f]])
+
+
+@app.post("/books/{book_id}/completar")
+async def complete_from_isbn(book_id: int, isbn: str = Form("")):
+    """Fills a book from its barcode. A new ISBN means the copy in hand is that edition, so its publisher, year
+    and cover replace the old guesses (a cover picked by hand stays); otherwise only empty fields are filled."""
+    code = lookup.clean_isbn(isbn)
+    with db.connect() as conn:
+        book = conn.execute("SELECT * FROM books WHERE id = ?", (book_id,)).fetchone()
+    if book is None:
+        return back("/")
+    if not code:
+        return back(f"/books/{book_id}?completed=")
+    try:
+        found = await lookup.by_isbn(code)
+    except lookup.LookupFailed:
+        found = None
+    new_edition = code != book["isbn"]
+    changes = {"isbn": code} if new_edition else {}
+    for f in ("title", "author", "publisher", "edition", "year", "cover_url"):
+        value = (found or {}).get(f)
+        if not value or value == book[f]:
+            continue
+        if f == "cover_url" and book["cover_manual"]:
+            continue
+        if not book[f] or (new_edition and f in ("publisher", "edition", "year", "cover_url")):
+            changes[f] = value
+    if changes:
+        with db.connect() as conn:
+            conn.execute(f"UPDATE books SET {', '.join(f'{f} = ?' for f in changes)}, cover_checked = 1 WHERE id = ?",
+                         [*changes.values(), book_id])
+            if "author" in changes or "title" in changes:
+                row = conn.execute("SELECT title, author FROM books WHERE id = ?", (book_id,)).fetchone()
+                conn.execute("UPDATE books SET match_key = ? WHERE id = ?",
+                             (db.match_key(row["title"], row["author"]), book_id))
+    names = {**FIELD_NAMES, "title": "título", "edition": "edición"}
+    return back(f"/books/{book_id}?completed={quote(', '.join(names[f] for f in changes))}")
 
 
 @app.post("/books/{book_id}")
@@ -289,6 +332,39 @@ async def choose_edition(request: Request, book_id: int):
              form.get("publisher") or "", form.get("publisher") or "", form.get("edition") or "",
              int(year) if year.isdigit() else None, book_id))
     return back(f"/books/{book_id}?saved=1")
+
+
+# --- Repetidos ------------------------------------------------------------
+
+@app.get("/repetidos", response_class=HTMLResponse)
+def duplicates_page(request: Request, merged: int = 0):
+    with db.connect() as conn:
+        groups = db.duplicate_groups(conn)
+    groups.sort(key=lambda g: (g[0]["library"], g[0]["title"].lower()))
+    # Suggest keeping the copy that knows the most about itself; ties go to the one added first.
+    keep = {id(g): max(g, key=lambda b: (db.completeness(b), bool(b["lent_to"]), -b["id"]))["id"] for g in groups}
+    return render(request, "duplicates.html", groups=[(g, keep[id(g)]) for g in groups], merged=merged)
+
+
+@app.post("/repetidos/unir")
+async def merge_duplicates(request: Request):
+    form = await request.form()
+    ids = [int(i) for i in form.getlist("ids") if str(i).isdigit()]
+    keep = int(form.get("keep") or 0)
+    if keep in ids:
+        with db.connect() as conn:
+            db.merge_books(conn, keep, ids)
+    return back(f"/repetidos?merged={max(len(ids) - 1, 0)}")
+
+
+@app.post("/repetidos/ignorar")
+async def ignore_duplicates(request: Request):
+    form = await request.form()
+    ids = [i for i in form.getlist("ids") if str(i).isdigit()]
+    if len(ids) > 1:
+        with db.connect() as conn:
+            conn.execute("INSERT OR IGNORE INTO dup_ignored (group_key) VALUES (?)", (db.group_key(ids),))
+    return back("/repetidos")
 
 
 # --- Préstamos ------------------------------------------------------------

@@ -435,3 +435,63 @@ def test_add_book_from_barcode(client, monkeypatch):
 
     # Scanning it again in the same library says it is already there.
     assert "ya está en Niños" in client.post("/isbn", data={"isbn": "9780802130303", "library": "Niños"}).text
+
+
+def test_match_key_ignores_series_and_edition_notes():
+    assert db.match_key("Harry Potter y la piedra filosofal (Harry Potter, #1)", "J.K. Rowling") == \
+        db.match_key("Harry Potter y la piedra filosofal", "J. K. Rowling")
+    assert db.match_key("Rayuela - Edición conmemorativa", "Julio Cortázar") == db.match_key("Rayuela", "Cortázar")
+
+
+def test_find_and_merge_duplicates(client):
+    login(client)
+    with db.connect() as conn:
+        a = db.add_book(conn, {"title": "Ficciones", "author": "Borges", "shelf": "Living 1"})
+        b = db.add_book(conn, {"title": "Ficciones (Spanish Edition)", "author": "Jorge Luis Borges",
+                               "isbn": "9788499089508", "publisher": "Debolsillo", "notes": "de la abuela"})
+        c = db.add_book(conn, {"title": "Ficciones", "author": ""})  # a spine read without author
+        d = db.add_book(conn, {"title": "Ficciones", "author": "Borges", "library": "Niños"})  # other library
+        e = db.add_book(conn, {"title": "Rayuela", "author": "Cortázar"})
+        f = db.add_book(conn, {"title": "Rayuela", "author": "Cortázar"})
+        db.lend(conn, b, "Lucía", "2026-10-01", "", "anya")
+        groups = db.duplicate_groups(conn)
+    assert sorted(sorted(x["id"] for x in g) for g in groups) == [[a, b, c], [e, f]]
+    assert "2 posibles repetidos" in client.get("/?library=Principal").text
+
+    page = client.get("/repetidos").text
+    # The copy with ISBN and publisher is suggested.
+    assert f'value="{b}" checked' in page
+    client.post("/repetidos/unir", data={"ids": [a, b, c], "keep": a})
+    with db.connect() as conn:
+        kept = conn.execute("SELECT * FROM books WHERE id = ?", (a,)).fetchone()
+        assert kept["isbn"] == "9788499089508" and kept["publisher"] == "Debolsillo" and kept["shelf"] == "Living 1"
+        assert kept["notes"] == "de la abuela"
+        assert db.active_loan(conn, a)["person"] == "Lucía"  # the loan moved over
+        assert conn.execute("SELECT COUNT(*) FROM books WHERE id IN (?, ?)", (b, c)).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM books WHERE id = ?", (d,)).fetchone()[0] == 1
+
+    # Two real copies: marked as not repeated, they stop showing.
+    client.post("/repetidos/ignorar", data={"ids": [e, f]})
+    assert "No hay libros repetidos" in client.get("/repetidos").text
+
+
+def test_complete_book_from_barcode(client, monkeypatch):
+    login(client)
+    with db.connect() as conn:
+        book_id = db.add_book(conn, {"title": "Ficciones", "author": "", "publisher": "Adivinada", "year": 1990})
+
+    async def fake_by_isbn(isbn):
+        return {"title": "Ficciones", "author": "Jorge Luis Borges", "publisher": "Debolsillo", "edition": "3ª ed.",
+                "year": 2011, "cover_url": "https://covers/x.jpg", "isbn": isbn}
+
+    monkeypatch.setattr(lookup, "by_isbn", fake_by_isbn)
+    assert "Le faltan: autor, ISBN, portada" in client.get(f"/books/{book_id}").text
+    r = client.post(f"/books/{book_id}/completar", data={"isbn": "9788499089508"}, follow_redirects=False)
+    page = client.get(r.headers["location"]).text
+    assert "Se completaron:" in page
+    with db.connect() as conn:
+        b = conn.execute("SELECT * FROM books WHERE id = ?", (book_id,)).fetchone()
+    # A scanned ISBN is the edition in hand: its publisher and year replace the guesses.
+    assert (b["author"], b["isbn"], b["publisher"], b["year"], b["cover_url"]) == \
+        ("Jorge Luis Borges", "9788499089508", "Debolsillo", 2011, "https://covers/x.jpg")
+    assert b["match_key"] == db.match_key("Ficciones", "Jorge Luis Borges")
