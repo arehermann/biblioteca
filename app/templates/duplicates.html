@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="narrow">
+  <h1>Repetidos</h1>
+  {% if merged %}<p class="notice">Listo, se unieron {{ merged }} {{ "copia" if merged == 1 else "copias" }}.</p>{% endif %}
+  {% if not groups %}
+    <p class="card">No hay libros repetidos.</p>
+  {% else %}
+    <p class="muted">Libros que parecen el mismo dentro de una biblioteca. Marca el que quieres conservar: se completa con los datos que le falten de los otros, se queda con sus préstamos y notas, y los demás se borran. Si de verdad tienes dos ejemplares, o son ediciones distintas, toca "No son repetidos".</p>
+    {% for group, keep in groups %}
+    <form method="post" action="/repetidos/unir" class="card dup-group">
+      <p class="muted small">{{ group[0].library }} · {{ group|length }} copias</p>
+      {% for b in group %}
+      <input type="hidden" name="ids" value="{{ b.id }}">
+      <label class="dup-row">
+        <input type="radio" name="keep" value="{{ b.id }}" {% if b.id == keep %}checked{% endif %}>
+        {% if b.cover_url %}<img src="{{ b.cover_url }}" alt="" loading="lazy">{% else %}<span class="nocover c{{ b.id % 6 }}"></span>{% endif %}
+        <span class="grow">
+          <strong>{{ b.title }}</strong>
+          <span>{{ b.author or 'Sin autor' }}</span>
+          <span class="muted small">{{ [b.publisher, b.edition, b.year|string if b.year else '', 'ISBN ' ~ b.isbn if b.isbn else '', b.shelf] | select | join(' · ') or 'Sin más datos' }}</span>
+          <span class="muted small">Cargado {{ 'con foto' if b.source == 'foto' else 'desde ' ~ b.source if b.source not in ('manual', '') else 'a mano' }}{% if b.added_by %} por {{ b.added_by }}{% endif %}{% if b.lent_to %} · <span class="late">Prestado a {{ b.lent_to }}</span>{% endif %}</span>
+        </span>
+        <a href="/books/{{ b.id }}" class="small">Ver</a>
+      </label>
+      {% endfor %}
+      <div class="loan-actions">
+        <button class="btn primary">Unir en el marcado</button>
+        <button class="btn" formaction="/repetidos/ignorar">No son repetidos</button>
+      </div>
+    </form>
+    {% endfor %}
+  {% endif %}
+</section>
+{% endblock %}

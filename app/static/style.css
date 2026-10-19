@@ -273,3 +273,19 @@ button.link { background: none; border: 0; color: var(--accent); font: inherit; 
 .found .cover { width: 96px; flex: none; }
 .found h2 { font-size: 1.3rem; margin: 2px 0; }
 .found p { margin: 0; }
+
+/* --- Duplicates ---------------------------------------------------------- */
+.dup-group { display: flex; flex-direction: column; gap: 8px; }
+.dup-group > p { margin: 0; }
+.dup-row { flex-direction: row; align-items: center; gap: 12px; padding: 10px; border-radius: 14px; border: var(--bw) solid var(--line);
+           color: var(--text); font-weight: 400; cursor: pointer; }
+.dup-row:has(input:checked) { border-color: var(--accent); background: var(--surface-2); }
+.dup-row input[type=radio] { width: 22px; height: 22px; min-height: 0; flex: none; accent-color: var(--accent); }
+.dup-row img, .dup-row .nocover { width: 44px; height: 66px; flex: none; border-radius: 6px; object-fit: cover; padding: 0; }
+.dup-row .grow { display: flex; flex-direction: column; gap: 1px; }
+.dup-row a { color: var(--accent) !important; padding: 8px; }
+.scan-row { gap: 8px; }
+.scan-row label { flex-direction: row; align-items: center; gap: 12px; color: var(--text); font-weight: 700; font-size: 1rem; min-height: 56px; cursor: pointer; }
+.scan-row label .grow { display: flex; flex-direction: column; }
+.scan-row small { font-weight: 500; color: var(--muted); font-size: .8rem; }
+.theme-noche .scan-row svg { color: var(--accent); }

@@ -45,6 +45,9 @@ CREATE TABLE IF NOT EXISTS loans (
     lent_by TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS loans_book ON loans(book_id);
+CREATE TABLE IF NOT EXISTS dup_ignored (
+    group_key TEXT PRIMARY KEY
+);
 CREATE TABLE IF NOT EXISTS scans (
     id INTEGER PRIMARY KEY,
     shelf TEXT NOT NULL DEFAULT '',
@@ -90,6 +93,15 @@ def init_db() -> None:
                     if (table, name) in AFTER_MIGRATION:
                         conn.execute(AFTER_MIGRATION[(table, name)])
         conn.execute("CREATE INDEX IF NOT EXISTS books_library ON books(library)")
+        refresh_match_keys(conn)
+
+
+def refresh_match_keys(conn) -> None:
+    """Recomputes stored keys when match_key's rules change, so older books are compared the same way."""
+    for row in conn.execute("SELECT id, title, author, match_key FROM books").fetchall():
+        key = match_key(row["title"], row["author"])
+        if key != row["match_key"]:
+            conn.execute("UPDATE books SET match_key = ? WHERE id = ?", (key, row["id"]))
 
 
 def clean_library(value: str | None) -> str:
@@ -114,11 +126,18 @@ def _fold(text: str) -> str:
     return re.sub(r"[^a-z0-9 ]+", " ", text)
 
 
-def match_key(title: str, author: str) -> str:
-    """Key used to spot duplicates: folded title (no subtitle, no leading article) + author surname."""
-    t = _fold((title or "").split(":")[0])
+def _title_key(title: str) -> str:
+    """Folded title without subtitle, series or edition notes ("Harry Potter (Book 1)", "Rayuela - Edición
+    conmemorativa", "El Aleph [bolsillo]") and without a leading article."""
+    t = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", title or "")
+    t = _fold(re.split(r":| - | – | — ", t)[0])
     t = re.sub(r"^(the|a|an|el|la|los|las|un|una|lo)\s+", "", t.strip())
-    t = " ".join(t.split())
+    return " ".join(t.split())
+
+
+def match_key(title: str, author: str) -> str:
+    """Key used to spot duplicates: title key + author surname."""
+    t = _title_key(title)
     first_author = re.split(r",|;| y | and |&", author or "")[0]
     surname = (_fold(first_author).split() or [""])[-1]
     return f"{t}|{surname}"
@@ -191,3 +210,80 @@ def give_back(conn, loan_id: int, returned_on: str) -> None:
 
 def borrowers(conn) -> list[str]:
     return [r[0] for r in conn.execute("SELECT person FROM loans GROUP BY person ORDER BY MAX(id) DESC")]
+
+
+# --- Repetidos ---------------------------------------------------------------
+
+def duplicate_groups(conn) -> list[list]:
+    """Books in the same library that look like the same book: same title and author, same ISBN, or same title
+    where one of them has no author (a spine that showed only the title). Groups someone marked as not repeated
+    stay hidden until another book joins them."""
+    rows = conn.execute(
+        "SELECT books.*, (SELECT person FROM loans WHERE loans.book_id = books.id AND returned_on IS NULL"
+        " LIMIT 1) AS lent_to FROM books ORDER BY id").fetchall()
+    parent = {r["id"]: r["id"] for r in rows}
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def join(by):
+        buckets = {}
+        for r in rows:
+            for key in by(r):
+                buckets.setdefault(key, []).append(r["id"])
+        for ids in buckets.values():
+            for i in ids[1:]:
+                parent[find(i)] = find(ids[0])
+
+    join(lambda r: [(r["library"], r["match_key"])])
+    join(lambda r: [(r["library"], r["isbn"])] if r["isbn"] else [])
+    # A spine that showed only the title gives a book without author: it matches any book with that title.
+    authorless = {(r["library"], _title_key(r["title"])) for r in rows if not r["author"].strip()}
+    join(lambda r: [(r["library"], _title_key(r["title"]))]
+         if (r["library"], _title_key(r["title"])) in authorless else [])
+
+    groups = {}
+    for r in rows:
+        groups.setdefault(find(r["id"]), []).append(r)
+    ignored = {r[0] for r in conn.execute("SELECT group_key FROM dup_ignored")}
+    return [g for g in groups.values() if len(g) > 1 and group_key([b["id"] for b in g]) not in ignored]
+
+
+def group_key(ids) -> str:
+    return ",".join(str(i) for i in sorted(int(i) for i in ids))
+
+
+def completeness(book) -> int:
+    """How much a copy knows about itself, to suggest which one to keep."""
+    return sum(bool(book[f]) for f in ("author", "isbn", "publisher", "edition", "year", "cover_url", "shelf",
+                                       "notes")) + (2 if book["cover_url"] else 0)
+
+
+def merge_books(conn, keep_id: int, ids: list[int]) -> None:
+    """Folds the other copies into keep_id: empty fields are filled from them, notes and loans are kept, and the
+    other copies are deleted."""
+    others = [i for i in ids if i != keep_id]
+    keep = conn.execute("SELECT * FROM books WHERE id = ?", (keep_id,)).fetchone()
+    if keep is None or not others:
+        return
+    merged = dict(keep)
+    notes = [keep["notes"]] if keep["notes"] else []
+    for book in conn.execute(f"SELECT * FROM books WHERE id IN ({','.join('?' * len(others))}) ORDER BY id",
+                             others).fetchall():
+        for f in ("author", "isbn", "publisher", "edition", "year", "shelf"):
+            merged[f] = merged[f] or book[f]
+        if not merged["cover_url"] and book["cover_url"]:
+            merged["cover_url"], merged["cover_manual"] = book["cover_url"], book["cover_manual"]
+        if book["notes"] and book["notes"] not in notes:
+            notes.append(book["notes"])
+    merged["notes"] = "\n".join(notes)
+    conn.execute(
+        "UPDATE books SET author=:author, isbn=:isbn, publisher=:publisher, edition=:edition, year=:year,"
+        " shelf=:shelf, cover_url=:cover_url, cover_manual=:cover_manual, notes=:notes, match_key=:mk WHERE id=:id",
+        {**merged, "mk": match_key(merged["title"], merged["author"])})
+    marks = ",".join("?" * len(others))
+    conn.execute(f"UPDATE loans SET book_id = ? WHERE book_id IN ({marks})", [keep_id, *others])
+    conn.execute(f"DELETE FROM books WHERE id IN ({marks})", others)

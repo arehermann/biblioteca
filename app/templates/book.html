@@ -66,6 +66,20 @@
     {% if book.isbn %}<small>ISBN {{ book.isbn }}</small>{% else %}{{ icon('next', 18) }}{% endif %}
   </a>
 
+  <form method="post" action="/books/{{ book.id }}/completar" class="row-link scan-row">
+    <input type="hidden" name="isbn" value="{{ book.isbn }}">
+    <label class="grow">
+      <input type="file" accept="image/*" capture="environment" hidden data-barcode>
+      {{ icon('barcode', 20) }}
+      <span class="grow"><span>Escanear código para completar datos</span><small data-barcode-status role="status">{% if missing %}Le faltan: {{ missing|join(', ') }}{% else %}Saca una foto al código de la contratapa{% endif %}</small></span>
+    </label>
+    {% if book.isbn and missing %}<button class="link">Completar con el ISBN</button>{% endif %}
+  </form>
+  {% if completed is not none %}
+    {% if completed %}<p class="notice">Se completaron: {{ completed }}.</p>
+    {% else %}<p class="error">No encontré más datos para ese ISBN en Open Library ni en Google Books.</p>{% endif %}
+  {% endif %}
+
   {% if book.notes %}<p class="note">{{ book.notes }}</p>{% endif %}
 
   {% if past %}
@@ -87,5 +101,9 @@
 
   <p class="muted small center">Agregado por {{ book.added_by or '—' }} el {{ book.created_at[:10]|fecha }} · origen: {{ book.source }}</p>
 </div>
+{% endif %}
+{% if book %}
+<script src="/static/vendor/zxing-0.21.3.min.js"></script>
+<script src="/static/barcode.js"></script>
 {% endif %}
 {% endblock %}

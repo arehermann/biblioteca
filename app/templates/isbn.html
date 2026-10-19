@@ -12,8 +12,8 @@
   {% if not found %}
   <form method="post" action="/isbn" class="stack" id="isbn-form">
     {{ library_picker(library) }}
-    <label class="btn primary big-pick"><input type="file" accept="image/*" capture="environment" hidden id="barcode-photo">{{ icon('camera', 20) }} Sacar foto al código</label>
-    <p class="muted small" id="scan-status" role="status">Enfoca el código de barras de la contratapa, de cerca y derecho. Se lee en el celular, sin usar la API de Claude.</p>
+    <label class="btn primary big-pick"><input type="file" accept="image/*" capture="environment" hidden data-barcode>{{ icon('camera', 20) }} Sacar foto al código</label>
+    <p class="muted small" data-barcode-status role="status">Enfoca el código de barras de la contratapa, de cerca y derecho. Se lee en el celular, sin usar la API de Claude.</p>
     <label>ISBN <input name="isbn" id="isbn" value="{{ isbn or '' }}" inputmode="numeric" autocomplete="off" placeholder="978…" required></label>
     <label>Estante (opcional) <input name="shelf" value="{{ shelf }}" list="shelves" placeholder="Ej: Living, repisa 2"></label>
     <datalist id="shelves">{% for s in shelves %}<option value="{{ s }}">{% endfor %}</datalist>
@@ -21,73 +21,7 @@
   </form>
   <p class="muted small">¿Muchos libros juntos? Es más rápido con una <a href="/scan">foto del estante</a>.</p>
   <script src="/static/vendor/zxing-0.21.3.min.js"></script>
-  <script>
-    const photo = document.getElementById('barcode-photo');
-    const statusLine = document.getElementById('scan-status');
-    const isbnInput = document.getElementById('isbn');
-
-    function loadImage(file) {
-      return new Promise((resolve, reject) => {
-        const img = new Image();
-        img.onload = () => resolve(img);
-        img.onerror = reject;
-        img.src = URL.createObjectURL(file);
-      });
-    }
-
-    function drawn(img, size, turn) {
-      const scale = Math.min(1, size / Math.max(img.naturalWidth, img.naturalHeight));
-      const w = Math.round(img.naturalWidth * scale), h = Math.round(img.naturalHeight * scale);
-      const canvas = document.createElement('canvas');
-      canvas.width = turn ? h : w;
-      canvas.height = turn ? w : h;
-      const ctx = canvas.getContext('2d');
-      if (turn) { ctx.translate(h, 0); ctx.rotate(Math.PI / 2); }
-      ctx.drawImage(img, 0, 0, w, h);
-      return canvas;
-    }
-
-    // Book barcodes are EAN-13 starting with 978/979; a second, smaller code next to it is often the price.
-    const bookCode = codes => codes.find(c => /^97[89]\d{10}$/.test(c)) || codes[0];
-
-    async function readBarcode(file) {
-      const img = await loadImage(file);
-      if ('BarcodeDetector' in window) {
-        try {
-          const found = await new BarcodeDetector({ formats: ['ean_13', 'ean_8', 'upc_a'] }).detect(img);
-          if (found.length) return bookCode(found.map(f => f.rawValue));
-        } catch (e) { /* fall back to zxing */ }
-      }
-      const hints = new Map();
-      hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.EAN_8, ZXing.BarcodeFormat.UPC_A]);
-      hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
-      const reader = new ZXing.MultiFormatReader();
-      reader.setHints(hints);
-      for (const size of [1400, 900, 2200]) {
-        for (const turn of [false, true]) {
-          const source = new ZXing.HTMLCanvasElementLuminanceSource(drawn(img, size, turn));
-          try {
-            return reader.decode(new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(source))).getText();
-          } catch (e) { /* try the next size or orientation */ }
-        }
-      }
-      throw new Error('sin código');
-    }
-
-    photo.addEventListener('change', async () => {
-      if (!photo.files.length) return;
-      statusLine.textContent = 'Leyendo el código…';
-      try {
-        const code = await readBarcode(photo.files[0]);
-        isbnInput.value = code;
-        statusLine.textContent = 'Código leído: ' + code + '. Buscando el libro…';
-        document.getElementById('isbn-form').submit();
-      } catch (e) {
-        statusLine.textContent = 'No pude leer el código. Prueba con otra foto más de cerca y con buena luz, o escribe el ISBN.';
-      }
-      photo.value = '';
-    });
-  </script>
+  <script src="/static/barcode.js"></script>
   {% else %}
   <div class="found">
     {% if found.cover_url %}<img src="{{ found.cover_url }}" alt="Portada" class="cover">{% else %}<span class="nocover cover c{{ found.isbn[-1]|int % 6 }}"><span>{{ found.title or 'Sin portada' }}</span></span>{% endif %}
