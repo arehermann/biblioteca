@@ -4,6 +4,7 @@ Catálogo web de nuestros libros físicos. Corre en la Raspberry Pi y se usa des
 
 - **Dos bibliotecas:** Principal (estilo oscuro) y Niños (estilo colorido). Cada libro pertenece a una, el catálogo se puede ver por separado y puedes mover libros de una a otra seleccionándolos.
 - **Foto de estante:** sacas una foto a una repisa (o eliges una de la galería, ya recortada), Claude lee los lomos, la app busca cada libro en Open Library (portada, ISBN, año) y tú confirmas antes de guardar.
+- **Código de barras:** para un libro suelto, sácale una foto al código de la contratapa. Se lee en el celular (no usa la API de Claude) y los datos se buscan en Open Library y Google Books.
 - **Importar desde StoryGraph o Goodreads:** sube el CSV que exporta cualquiera de los dos. Se pueden importar solo los marcados como propios.
 - **Catálogo compartido:** cada persona tiene su usuario y las dos pueden agregar, editar y borrar.
 - **Búsqueda y estantes:** busca por título, autor o ISBN y filtra por estante.

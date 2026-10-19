@@ -1,0 +1,4 @@
+  <nav class="seg scan-tabs" aria-label="Cómo agregar">
+    <a href="/scan"{% if request.url.path.startswith('/scan') %} class="on" aria-current="page"{% endif %}>Foto del estante</a>
+    <a href="/isbn"{% if request.url.path == '/isbn' %} class="on" aria-current="page"{% endif %}>Código de barras</a>
+  </nav>

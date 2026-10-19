@@ -383,3 +383,55 @@ def test_two_libraries_scan_import_move_and_filter(client, monkeypatch):
 def test_scan_without_photo_explains(client):
     login(client)
     assert "Saca una foto o elige una de la galería" in client.post("/scan", data={"library": "Principal"}).text
+
+
+def test_clean_isbn():
+    assert lookup.clean_isbn("978-84-9908-950-8") == "9788499089508"
+    assert lookup.clean_isbn("0802130305") == "9780802130303"  # ISBN-10 becomes ISBN-13
+    assert lookup.clean_isbn("9788499089500") == ""  # bad check digit
+    assert lookup.clean_isbn("7790001234567") == ""  # a product barcode, not a book
+
+
+def test_by_isbn_joins_open_library_and_fills_gaps_from_google(monkeypatch):
+    import httpx
+
+    edition = {**EDITION, "covers": [], "isbn_13": ["9789500404405"]}
+    google = {"items": [{"volumeInfo": {"title": "Ficciones (Google)", "authors": ["Jorge Luis Borges"],
+                                        "imageLinks": {"thumbnail": "http://books.google.com/x.jpg"}}}]}
+    handler, calls = _ol_handler({"/isbn/9789500404405.json": edition, "/search.json": {"docs": [WORK_DOC]},
+                                  "/books/v1/volumes": google})
+    real = httpx.AsyncClient
+    monkeypatch.setattr(lookup.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    book = asyncio.run(lookup.by_isbn("9789500404405"))
+    # Title, publisher and edition come from the exact edition, the author from the search, the cover from the work.
+    assert book["title"] == "Ficciones" and book["publisher"] == "Emecé" and book["edition"] == "2a ed."
+    assert book["author"] == "Borges" and book["cover_url"].endswith("/7-M.jpg")
+    assert "/books/v1/volumes" not in [c[0] for c in calls]
+
+    handler, _ = _ol_handler({"/books/v1/volumes": google})
+    monkeypatch.setattr(lookup.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    book = asyncio.run(lookup.by_isbn("9789500404405"))
+    assert book["title"] == "Ficciones (Google)" and book["cover_url"] == "https://books.google.com/x.jpg"
+
+
+def test_add_book_from_barcode(client, monkeypatch):
+    login(client)
+
+    async def fake_by_isbn(isbn):
+        return {"title": "Ficciones", "author": "Borges", "publisher": "Emecé", "edition": "", "year": 1956,
+                "cover_url": "", "isbn": isbn}
+
+    monkeypatch.setattr(lookup, "by_isbn", fake_by_isbn)
+    assert "no es un ISBN" in client.post("/isbn", data={"isbn": "123", "library": "Niños"}).text
+    page = client.post("/isbn", data={"isbn": "978-0-8021-3030-3", "library": "Niños", "shelf": "Pieza"}).text
+    assert 'value="Ficciones"' in page and 'value="9780802130303"' in page and 'value="Niños" checked' in page
+
+    r = client.post("/books/new", data={"next": "/isbn", "title": "Ficciones", "author": "Borges",
+                                        "isbn": "9780802130303", "library": "Niños", "shelf": "Pieza"},
+                    follow_redirects=False)
+    assert r.headers["location"].startswith("/isbn?added=")
+    after = client.get(r.headers["location"]).text
+    assert "Se agregó" in after and 'value="Pieza"' in after  # the shelf carries over to the next book
+
+    # Scanning it again in the same library says it is already there.
+    assert "ya está en Niños" in client.post("/isbn", data={"isbn": "9780802130303", "library": "Niños"}).text
