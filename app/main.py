@@ -7,7 +7,7 @@ from datetime import date
 from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -17,7 +17,7 @@ from . import auth, covers, db, lookup, storygraph, vision
 BASE = Path(__file__).parent
 PAGE_SIZE = 60
 ALL = "todas"
-PUBLIC_PATHS = ("/login", "/static")
+PUBLIC_PATHS = ("/login", "/static", "/sw.js")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -30,6 +30,13 @@ app = FastAPI(title="Biblioteca", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 
+
+
+@app.get("/sw.js", include_in_schema=False)
+def service_worker():
+    # Served from the root so its scope covers the whole app, not just /static/.
+    return FileResponse(BASE / "static" / "sw.js", media_type="text/javascript",
+                        headers={"Cache-Control": "no-cache"})
 
 def _fecha(iso: str | None) -> str:
     """2026-10-18 -> 18/10/2026"""

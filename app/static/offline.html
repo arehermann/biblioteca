@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sin conexión · Biblioteca</title>
+  <style>
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; box-sizing: border-box;
+           background: #121417; color: #EEE8DC; font: 16px/1.5 system-ui, sans-serif; text-align: center; }
+    img { width: 96px; border-radius: 22px; }
+    button { margin-top: 16px; padding: 12px 22px; border: 0; border-radius: 999px; background: #F2B24C; color: #121417;
+             font: inherit; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <div>
+    <img src="/static/icons/icon-192.png" alt="">
+    <h1>No llego a la biblioteca</h1>
+    <p>Revisa que Tailscale esté encendido en el celular.</p>
+    <button onclick="location.reload()">Reintentar</button>
+  </div>
+</body>
+</html>

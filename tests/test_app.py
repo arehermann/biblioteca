@@ -64,6 +64,18 @@ def test_requires_login(client):
     assert client.post("/login", data={"username": "anya", "password": "nope"}).text.count("incorrectos") == 1
 
 
+
+def test_installable_without_login(client):
+    page = client.get("/login").text
+    assert 'rel="manifest"' in page and 'register("/sw.js")' in page
+    sw = client.get("/sw.js", follow_redirects=False)
+    assert sw.status_code == 200 and "javascript" in sw.headers["content-type"]
+    manifest = client.get("/static/manifest.webmanifest").json()
+    assert manifest["display"] == "standalone" and manifest["start_url"] == "/"
+    for icon in manifest["icons"]:
+        assert client.get(icon["src"]).status_code == 200
+    assert client.get("/static/offline.html").status_code == 200
+
 def test_import_skips_duplicates(client):
     login(client)
     r = client.post("/import", files={"file": ("sg.csv", CSV, "text/csv")}, data={"only_owned": "1"})
