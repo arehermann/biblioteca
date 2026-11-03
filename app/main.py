@@ -467,7 +467,8 @@ def review_scan(request: Request, scan_id: int):
         data = db.load_scan(conn, scan_id)
     if data is None:
         return back("/scan")
-    return render(request, "review.html", scan=data)
+    from_codes = any(i.get("source") == "codigo" for i in data["items"])
+    return render(request, "review.html", scan=data, from_codes=from_codes)
 
 
 @app.post("/scan/{scan_id}")
@@ -485,11 +486,14 @@ async def save_scan(request: Request, scan_id: int):
                 continue
             title = (form.get(f"title_{i}") or item["title"]).strip()
             author = (form.get(f"author_{i}") or item["author"]).strip()
+            if not title:
+                continue  # an ISBN nobody knew, left without a title
             publisher = (form.get(f"publisher_{i}") or "").strip()
             db.add_book(conn, {
                 "title": title, "author": author, "isbn": item.get("isbn", ""),
                 "publisher": publisher, "edition": item.get("edition", ""), "year": item.get("year"),
-                "cover_url": item.get("cover_url", ""), "shelf": shelf, "library": library, "source": "foto",
+                "cover_url": item.get("cover_url", ""), "shelf": shelf, "library": library,
+                "source": item.get("source", "foto"),
             }, request.session["user"])
             added += 1
         conn.execute("DELETE FROM scans WHERE id = ?", (scan_id,))
@@ -535,6 +539,51 @@ async def isbn_lookup(request: Request, isbn: str = Form(""), library: str = For
         found = {"title": "", "author": "", "publisher": "", "edition": "", "year": None, "cover_url": "", "isbn": code}
         error = error or "No encontré este ISBN en Open Library ni en Google Books. Puedes completar los datos a mano."
     return isbn_form(request, found=found, shelf=shelf, error=error)
+
+
+BATCH_LIMIT = 150
+
+
+def batch_form(request: Request, error: str | None = None):
+    library = current_library(request)
+    with db.connect() as conn:
+        return render(request, "isbn_batch.html", library=library, shelves=shelves(conn, library),
+                      shelf=request.session.get("isbn_shelf", ""), error=error)
+
+
+@app.get("/isbn/lote", response_class=HTMLResponse)
+def isbn_batch_page(request: Request):
+    return batch_form(request)
+
+
+@app.post("/isbn/lote")
+async def isbn_batch(request: Request, isbns: str = Form(""), library: str = Form(""), shelf: str = Form("")):
+    """Looks up every scanned ISBN at once and opens the same review page a shelf photo uses."""
+    library = remember_library(request, library)
+    shelf = shelf.strip()
+    request.session["isbn_shelf"] = shelf
+    codes = list(dict.fromkeys(c for c in map(lookup.clean_isbn, isbns.split()) if c))[:BATCH_LIMIT]
+    if not codes:
+        return batch_form(request, "La lista no tiene ningún ISBN válido. Escanea los códigos que empiezan con 978 o 979.")
+    results = await lookup.by_isbn_many(codes)
+    items = []
+    with db.connect() as conn:
+        for code, found in zip(codes, results):
+            failed = isinstance(found, lookup.LookupFailed)
+            book = found if isinstance(found, dict) else {}
+            item = {"title": book.get("title", ""), "author": book.get("author", ""),
+                    "publisher": book.get("publisher", ""), "edition": book.get("edition", ""),
+                    "year": book.get("year"), "cover_url": book.get("cover_url", ""), "isbn": code,
+                    "matched": bool(book), "source": "codigo", "confidence": "high" if book else "low",
+                    "note": "" if book else ("Open Library no respondió" if failed else
+                                             "No encontré este ISBN en Open Library ni en Google Books")}
+            dup = conn.execute("SELECT id FROM books WHERE isbn = ? AND library = ?", (code, library)).fetchone()
+            if dup is None and book:
+                dup = db.find_duplicate(conn, item["title"], item["author"], library)
+            item["duplicate_id"] = dup["id"] if dup else None
+            items.append(item)
+        scan_id = db.save_scan(conn, shelf, items, request.session["user"], library)
+    return back(f"/scan/{scan_id}")
 
 
 @app.get("/import", response_class=HTMLResponse)

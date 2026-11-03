@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% from "_library.html" import library_picker with context %}
+{% block content %}
+<section class="card narrow">
+  <h1>Varios códigos</h1>
+  {% include "_scan_tabs.html" %}
+  <p class="muted small">Pasa los libros por la cámara uno tras otro: cada código se suma a la lista con un pitido. Al final los busco todos juntos y los revisas antes de agregarlos.</p>
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+  <form method="post" action="/isbn/lote" class="stack" id="batch-form">
+    {{ library_picker(library) }}
+
+    <div class="live" data-live hidden>
+      <video playsinline muted></video>
+      <div class="live-guide" aria-hidden="true"></div>
+      <p class="live-flash" data-flash role="status" aria-live="polite"></p>
+    </div>
+    <div class="row">
+      <button type="button" class="btn primary cam-btn" data-start>{{ icon('barcode', 20) }} Abrir cámara</button>
+      <button type="button" class="btn cam-btn" data-stop hidden>Pausar cámara</button>
+    </div>
+    <label class="btn" data-photo hidden><input type="file" accept="image/*" capture="environment" hidden>{{ icon('camera', 20) }} Sacar foto al código</label>
+    <p class="muted small" data-status role="status">Apunta al código de barras de la contratapa. Se lee en el celular, sin usar la API de Claude.</p>
+
+    <div class="add-isbn">
+      <input id="manual-isbn" inputmode="numeric" autocomplete="off" placeholder="O escribe un ISBN" aria-label="ISBN">
+      <button type="button" class="btn" data-manual>{{ icon('plus', 18) }} Sumar</button>
+    </div>
+
+    <h2 data-count>Lista vacía</h2>
+    <ol class="isbn-queue" data-queue></ol>
+    <textarea name="isbns" hidden></textarea>
+
+    <label>Estante (opcional) <input name="shelf" value="{{ shelf }}" list="shelves" placeholder="Ej: Living, repisa 2"></label>
+    <datalist id="shelves">{% for s in shelves %}<option value="{{ s }}">{% endfor %}</datalist>
+    <button class="btn primary" data-submit disabled>Buscar libros</button>
+    <button type="button" class="btn" data-clear hidden>Vaciar lista</button>
+  </form>
+  <p class="muted small">¿Uno solo? <a href="/isbn">Escanear un código</a>.</p>
+</section>
+<script src="/static/vendor/zxing-0.21.3.min.js"></script>
+<script src="/static/barcode.js"></script>
+<script src="/static/batch.js"></script>
+{% endblock %}

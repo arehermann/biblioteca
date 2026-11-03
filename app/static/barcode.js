@@ -1,6 +1,6 @@
 // Reads a book's barcode from a photo, in the browser: native BarcodeDetector when present, zxing otherwise.
 // Any <input type="file" data-barcode> fills its form's [name=isbn] with the code and submits the form;
-// the form's [data-barcode-status] element shows progress.
+// the form's [data-barcode-status] element shows progress. window.Barcode exposes the readers for other pages.
 (() => {
   function loadImage(file) {
     return new Promise((resolve, reject) => {
@@ -26,19 +26,51 @@
   // Book barcodes are EAN-13 starting with 978/979; a second, smaller code next to it is often the price.
   const bookCode = codes => codes.find(c => /^97[89]\d{10}$/.test(c)) || codes[0];
 
+  const FORMATS = ['ean_13', 'ean_8', 'upc_a'];
+  let detector = null;
+  if ('BarcodeDetector' in window) {
+    try { detector = new BarcodeDetector({ formats: FORMATS }); } catch (e) { /* zxing only */ }
+  }
+
+  function zxingReader(tryHarder) {
+    const hints = new Map();
+    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.EAN_8, ZXing.BarcodeFormat.UPC_A]);
+    if (tryHarder) hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+    const reader = new ZXing.MultiFormatReader();
+    reader.setHints(hints);
+    return reader;
+  }
+
+  // Whatever code is in an image, video or canvas right now, or null. Quick enough to call on every video frame.
+  let liveReader = null;
+  async function readSource(source, canvas) {
+    if (detector) {
+      try {
+        const found = await detector.detect(source);
+        return found.length ? bookCode(found.map(f => f.rawValue)) : null;
+      } catch (e) { /* fall back to zxing */ }
+    }
+    if (!canvas) return null;
+    liveReader = liveReader || zxingReader(false);
+    try {
+      const lum = new ZXing.HTMLCanvasElementLuminanceSource(canvas);
+      return liveReader.decode(new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(lum))).getText();
+    } catch (e) {
+      return null;
+    } finally {
+      liveReader.reset();
+    }
+  }
+
   async function readBarcode(file) {
     const img = await loadImage(file);
-    if ('BarcodeDetector' in window) {
+    if (detector) {
       try {
-        const found = await new BarcodeDetector({ formats: ['ean_13', 'ean_8', 'upc_a'] }).detect(img);
+        const found = await detector.detect(img);
         if (found.length) return bookCode(found.map(f => f.rawValue));
       } catch (e) { /* fall back to zxing */ }
     }
-    const hints = new Map();
-    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.EAN_8, ZXing.BarcodeFormat.UPC_A]);
-    hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
-    const reader = new ZXing.MultiFormatReader();
-    reader.setHints(hints);
+    const reader = zxingReader(true);
     for (const size of [1400, 900, 2200]) {
       for (const turn of [false, true]) {
         const source = new ZXing.HTMLCanvasElementLuminanceSource(drawn(img, size, turn));
@@ -49,6 +81,15 @@
     }
     throw new Error('sin código');
   }
+
+  // Same rule as lookup.clean_isbn: a 978/979 EAN-13 with a valid check digit.
+  function isIsbn(code) {
+    if (!/^97[89]\d{10}$/.test(code || '')) return false;
+    const sum = [...code.slice(0, 12)].reduce((t, c, i) => t + (i % 2 ? 3 : 1) * +c, 0);
+    return (10 - sum % 10) % 10 === +code[12];
+  }
+
+  window.Barcode = { readFile: readBarcode, readSource, isIsbn, native: !!detector };
 
   document.querySelectorAll('input[type=file][data-barcode]').forEach(photo => {
     const form = photo.form;
