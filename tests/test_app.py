@@ -449,6 +449,55 @@ def test_add_book_from_barcode(client, monkeypatch):
     assert "ya está en Niños" in client.post("/isbn", data={"isbn": "9780802130303", "library": "Niños"}).text
 
 
+def test_scan_many_barcodes_then_review_together(client, monkeypatch):
+    login(client)
+    with db.connect() as conn:
+        db.add_book(conn, {"title": "Rayuela", "author": "Cortázar", "isbn": "9788437604572", "library": "Niños"})
+    known = {
+        "9780802130303": {"title": "Ficciones", "author": "Borges", "publisher": "Emecé", "edition": "", "year": 1956,
+                          "cover_url": "https://covers/f.jpg"},
+        "9788437604572": {"title": "Rayuela", "author": "Julio Cortázar", "publisher": "Cátedra", "edition": "",
+                          "year": 1984, "cover_url": ""},
+    }
+    asked = []
+
+    async def fake_by_isbn(isbn):
+        asked.append(isbn)
+        if isbn == "9789500404402":
+            raise lookup.LookupFailed("timeout")
+        return {**known[isbn], "isbn": isbn} if isbn in known else None
+
+    monkeypatch.setattr(lookup, "by_isbn", fake_by_isbn)
+    page = client.get("/isbn/lote").text
+    assert "Varios códigos" in page and "/static/batch.js" in page
+    assert "no tiene ningún ISBN" in client.post("/isbn/lote", data={"isbns": "123\n7790001234567"}).text
+
+    # ISBN-10s become ISBN-13, repeats and junk are dropped, and each code is looked up once.
+    codes = "9780802130303\n0802130305\n9788437604572\n9788499089508\nbasura\n9789500404402"
+    r = client.post("/isbn/lote", data={"isbns": codes, "library": "Niños", "shelf": "Pieza"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("/scan/")
+    assert sorted(asked) == ["9780802130303", "9788437604572", "9788499089508", "9789500404402"]
+
+    review = client.get(r.headers["location"]).text
+    assert "Revisa los libros escaneados" in review and 'value="Pieza"' in review
+    assert "Ya está en Niños" in review  # Rayuela, by its ISBN
+    assert "No encontré este ISBN" in review and "Open Library no respondió" in review
+    assert "localStorage.removeItem('isbn-lote')" in review and 'href="/isbn/lote"' in review
+    # Only Ficciones starts checked (plus the library radio): one is already there, two have no title yet.
+    assert review.count("checked") == 2
+
+    # A title typed for an unknown ISBN adds it; a checked row left without a title is skipped.
+    r = client.post(r.headers["location"], data={"library": "Niños", "shelf": "Pieza", "add_0": "1", "add_2": "1",
+                                                 "title_2": "Diario de un gato", "add_3": "1"},
+                    follow_redirects=False)
+    assert "added=2" in r.headers["location"]
+    with db.connect() as conn:
+        rows = {b["title"]: b for b in conn.execute("SELECT * FROM books WHERE shelf = 'Pieza'")}
+    assert set(rows) == {"Ficciones", "Diario de un gato"}
+    assert rows["Ficciones"]["isbn"] == "9780802130303" and rows["Ficciones"]["library"] == "Niños"
+    assert rows["Ficciones"]["source"] == "codigo" and rows["Diario de un gato"]["isbn"] == "9788499089508"
+
+
 def test_match_key_ignores_series_and_edition_notes():
     assert db.match_key("Harry Potter y la piedra filosofal (Harry Potter, #1)", "J.K. Rowling") == \
         db.match_key("Harry Potter y la piedra filosofal", "J. K. Rowling")

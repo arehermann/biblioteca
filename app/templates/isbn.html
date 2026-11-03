@@ -19,7 +19,7 @@
     <datalist id="shelves">{% for s in shelves %}<option value="{{ s }}">{% endfor %}</datalist>
     <button class="btn">Buscar libro</button>
   </form>
-  <p class="muted small">¿Muchos libros juntos? Es más rápido con una <a href="/scan">foto del estante</a>.</p>
+  <p class="muted small">¿Muchos libros? <a href="/isbn/lote">Escanea varios códigos seguidos</a> y los busco todos juntos, o usa una <a href="/scan">foto del estante</a>.</p>
   <script src="/static/vendor/zxing-0.21.3.min.js"></script>
   <script src="/static/barcode.js"></script>
   {% else %}

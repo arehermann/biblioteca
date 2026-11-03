@@ -207,3 +207,18 @@ async def by_isbn(isbn: str) -> dict | None:
     if not book["title"]:
         return None
     return {**book, "isbn": isbn}
+
+
+async def by_isbn_many(isbns: list[str], concurrency: int = 4) -> list:
+    """by_isbn for a list of scanned codes, a few at a time so Open Library isn't flooded.
+
+    Each result is the book, None when neither source knows the ISBN, or a LookupFailed instance."""
+    sem = asyncio.Semaphore(concurrency)
+
+    async def one(isbn):
+        async with sem:
+            try:
+                return await by_isbn(isbn)
+            except LookupFailed as e:
+                return e
+    return await asyncio.gather(*(one(i) for i in isbns))

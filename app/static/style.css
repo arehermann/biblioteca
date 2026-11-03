@@ -268,9 +268,28 @@ button.link { background: none; border: 0; color: var(--accent); font: inherit; 
 
 /* --- Barcode ----------------------------------------------------------- */
 .scan-tabs { align-self: flex-start; margin: -4px 0 16px; width: fit-content; max-width: 100%; }
+.scan-tabs a { white-space: nowrap; padding: 0 12px; }
 .big-pick { flex-direction: row !important; min-height: 56px; font-size: 1.05rem; color: var(--on-accent) !important; cursor: pointer; }
 .found { display: flex; gap: 16px; align-items: center; margin-bottom: 16px; }
 .found .cover { width: 96px; flex: none; }
+/* "Varios códigos": the live camera with its guide box, and the list of scanned ISBNs. */
+[hidden] { display: none !important; }
+.live { position: relative; border-radius: var(--radius); overflow: hidden; background: #000; border: var(--bw) solid var(--line); }
+.live video { display: block; width: 100%; max-height: 52vh; object-fit: cover; }
+.live-guide { position: absolute; left: 10%; right: 10%; top: 30%; bottom: 30%; border: 3px solid rgba(255, 255, 255, .85);
+              border-radius: 12px; box-shadow: 0 0 0 999px rgba(0, 0, 0, .35); pointer-events: none; }
+.live-flash { position: absolute; left: 12px; right: 12px; bottom: 12px; margin: 0; padding: 10px 14px; border-radius: 12px;
+              font-weight: 700; text-align: center; opacity: 0; transition: opacity .2s; background: #1E7A46; color: #fff; }
+.live-flash.on { opacity: 1; }
+.live-flash.repeat { background: #8A5A12; }
+.cam-btn { flex-direction: row; min-height: 56px; font-size: 1.05rem; }
+.add-isbn { display: flex; gap: 8px; }
+.add-isbn .btn { flex: none; }
+.isbn-queue { margin: 0; padding: 0 0 0 28px; display: flex; flex-direction: column; gap: 2px; font-variant-numeric: tabular-nums; }
+.isbn-queue li { padding-left: 4px; }
+.isbn-queue li > * { vertical-align: middle; }
+.isbn-queue span { display: inline-block; min-width: 9.5em; }
+.isbn-queue button.link { padding: 6px 8px; font-size: .9rem; color: var(--muted); }
 .found h2 { font-size: 1.3rem; margin: 2px 0; }
 .found p { margin: 0; }
 
