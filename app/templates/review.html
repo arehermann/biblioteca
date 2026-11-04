@@ -48,10 +48,10 @@
   <form id="cover-{{ loop.index0 }}" method="post" action="/scan/{{ scan.id }}/portada/{{ loop.index0 }}" enctype="multipart/form-data" hidden></form>
   {% endif %}{% endfor %}
 </section>
-<script src="/static/cover.js"></script>
+<script src="{{ static('cover.js') }}"></script>
 {% if from_codes %}<script>
   // The server has the scanned codes now; start the next batch with an empty list.
   try { localStorage.removeItem('isbn-lote'); } catch (e) {}
 </script>{% endif %}
-<script src="/static/review.js"></script>
+<script src="{{ static('review.js') }}"></script>
 {% endblock %}

@@ -23,7 +23,7 @@
   </form>
   <p class="muted small">¿Muchos libros? <a href="/isbn/lote">Escanea varios códigos seguidos</a> y los busco todos juntos, o usa una <a href="/scan">foto del estante</a>.</p>
   <script src="/static/vendor/zxing-0.21.3.min.js"></script>
-  <script src="/static/barcode.js"></script>
+  <script src="{{ static('barcode.js') }}"></script>
   {% else %}
   <div class="found">
     {% if found.cover_url %}<img src="{{ found.cover_url }}" alt="Portada" class="cover">{% else %}<span class="nocover cover c{{ found.isbn[-1]|int % 6 }}"><span>{{ found.title or 'Sin portada' }}</span></span>{% endif %}
@@ -60,7 +60,7 @@
     <input type="hidden" name="shelf" value="{{ shelf }}">
     <input type="hidden" name="library" value="{{ library }}">
   </form>
-  <script src="/static/cover.js"></script>
+  <script src="{{ static('cover.js') }}"></script>
   {% endif %}
 </section>
 {% endblock %}
