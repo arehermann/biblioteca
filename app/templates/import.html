@@ -33,7 +33,7 @@
     <p>Todas las portadas están revisadas.</p>
   {% endif %}
   {% if no_cover and not covers_running %}
-    <p class="muted">{{ no_cover }} libros no tienen portada en Open Library. Puedes pegar una URL de portada a mano en cada libro.</p>
+    <p class="muted">{{ no_cover }} libros no tienen portada en Open Library ni en Google Books. Puedes pegar una URL de portada a mano en cada libro.</p>
     <form method="post" action="/covers"><input type="hidden" name="retry" value="1"><button class="btn">Volver a buscar esas {{ no_cover }}</button></form>
   {% endif %}
 </section>

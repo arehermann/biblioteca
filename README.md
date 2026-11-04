@@ -6,6 +6,7 @@ Catálogo web de nuestros libros físicos. Corre en la Raspberry Pi y se usa des
 - **Foto de estante:** sacas una foto a una repisa (o eliges una de la galería, ya recortada), Claude lee los lomos, la app busca cada libro en Open Library (portada, ISBN, año) y tú confirmas antes de guardar.
 - **Código de barras:** para un libro suelto, sácale una foto al código de la contratapa. Se lee en el celular (no usa la API de Claude) y los datos se buscan en Open Library y Google Books.
 - **Varios códigos:** abre la cámara y pasa los libros uno tras otro; cada código se suma a una lista con un pitido. Al final se buscan todos juntos y se revisan en una sola pantalla antes de agregarlos. La cámara en vivo necesita abrir la app con https (Tailscale Serve); sin https se saca una foto por libro, que igual se suma a la lista sin esperar.
+- **Foto de la portada:** si un ISBN no aparece en Open Library ni en Google Books, sácale una foto a la portada (y si quieres, a la página legal, la de los datos de impresión). Claude lee título, autor, editorial, año e ISBN, y la foto queda como portada. Está en la pantalla del código de barras, en la revisión de varios códigos o de una foto de estante, y en la ficha de un libro al que le faltan datos.
 - **Repetidos:** en el menú "⋯", Repetidos muestra los libros que parecen el mismo y deja unirlos en uno, sin perder préstamos ni notas.
 - **Completar datos:** en la ficha de un libro con pocos datos, escanea su código de barras para completar autor, editorial, año y portada.
 - **Importar desde StoryGraph o Goodreads:** sube el CSV que exporta cualquiera de los dos. Se pueden importar solo los marcados como propios.
@@ -50,6 +51,18 @@ La app queda en el puerto **8001**. Desde cualquier equipo conectado a tu Tailsc
 
 La lectura de lomos usa la API de Claude. La clave se crea en [console.anthropic.com](https://console.anthropic.com) (API Keys) y se cobra por uso, aparte de tu suscripción a Claude. Cada foto debería costar del orden de centavos de dólar. Puedes poner un límite de gasto mensual en la consola.
 
+### La clave de Google Books
+
+Cuando Open Library no tiene un libro (pasa mucho con ediciones en español), la app lo busca en Google Books. Sin clave, Google comparte una sola cuota diaria entre todas las apps del mundo que lo usan sin clave, y casi siempre está agotada. Con clave propia tienes 1000 búsquedas al día gratis:
+
+1. Entra a [console.cloud.google.com](https://console.cloud.google.com) con tu cuenta de Google y crea un proyecto (por ejemplo "Biblioteca").
+2. En **APIs y servicios → Biblioteca**, busca **Books API** y presiona **Habilitar**.
+3. En **APIs y servicios → Credenciales**, presiona **Crear credenciales → Clave de API** y cópiala.
+4. (Recomendado) En la clave, **Restringir clave → Restricciones de API → Books API**.
+5. Pégala en `.env` como `GOOGLE_BOOKS_API_KEY=...` y reinicia: `sudo systemctl restart biblioteca`.
+
+No pide tarjeta de crédito. Después de agregarla, en Importar usa "Volver a buscar" para que los libros que quedaron sin portada se busquen de nuevo.
+
 ### Actualizar
 
 ```bash
@@ -61,7 +74,7 @@ sudo systemctl restart biblioteca
 
 ### Respaldos
 
-Cada día se guarda una copia de la base en `data/respaldos/` y se conservan las últimas 14. Para hacer una a mano: `.venv/bin/python manage.py respaldo`. Para restaurar, detén la app (`sudo systemctl stop biblioteca`), copia el respaldo sobre `data/biblioteca.db` y vuelve a iniciarla.
+Cada día se guarda una copia de la base en `data/respaldos/` y se conservan las últimas 14. Las portadas sacadas con foto quedan en `data/portadas/` (no entran en el respaldo diario; si copias la carpeta `data` entera a otro lado, van incluidas). Para hacer una a mano: `.venv/bin/python manage.py respaldo`. Para restaurar, detén la app (`sudo systemctl stop biblioteca`), copia el respaldo sobre `data/biblioteca.db` y vuelve a iniciarla.
 
 ## Consejos para las fotos
 
@@ -77,4 +90,4 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt pytest
 .venv/bin/uvicorn app.main:app --reload
 ```
 
-Estructura: `app/main.py` (rutas), `app/vision.py` (lectura de lomos con Claude), `app/lookup.py` (Open Library), `app/storygraph.py` (importación CSV), `app/db.py` (SQLite).
+Estructura: `app/main.py` (rutas), `app/vision.py` (lectura de lomos con Claude), `app/lookup.py` (Open Library y Google Books), `app/storygraph.py` (importación CSV), `app/db.py` (SQLite).

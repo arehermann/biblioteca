@@ -2,6 +2,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 import asyncio
+import io
+import re
 
 from app import auth, covers, db, lookup, main, storygraph, vision
 
@@ -556,3 +558,142 @@ def test_complete_book_from_barcode(client, monkeypatch):
     assert (b["author"], b["isbn"], b["publisher"], b["year"], b["cover_url"]) == \
         ("Jorge Luis Borges", "9788499089508", "Debolsillo", 2011, "https://covers/x.jpg")
     assert b["match_key"] == db.match_key("Ficciones", "Jorge Luis Borges")
+
+
+# --- Google Books y fotos de portada -------------------------------------------
+
+def _mock_http(monkeypatch, handler):
+    import httpx
+    real = httpx.AsyncClient
+    monkeypatch.setattr(lookup.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+
+
+GOOGLE_HIT = {"items": [{"volumeInfo": {
+    "title": "Los niños del agua", "authors": ["Ana Pérez"], "publisher": "Ediciones B", "publishedDate": "2019-03",
+    "industryIdentifiers": [{"type": "ISBN_13", "identifier": "9788466664714"}],
+    "imageLinks": {"thumbnail": "http://books.google.com/agua.jpg"}}}]}
+
+
+def test_google_books_uses_the_key_and_retries_when_busy(monkeypatch):
+    import httpx
+    monkeypatch.setenv("GOOGLE_BOOKS_API_KEY", "clave123")
+    monkeypatch.setattr(lookup, "GOOGLE_RETRY_DELAYS", (0, 0))
+    google_calls = []
+
+    def handler(request):
+        if request.url.path == "/books/v1/volumes":
+            google_calls.append(dict(request.url.params))
+            return httpx.Response(429 if len(google_calls) == 1 else 200, json=GOOGLE_HIT)
+        return httpx.Response(200, json={"docs": []}) if request.url.path == "/search.json" else httpx.Response(404)
+
+    _mock_http(monkeypatch, handler)
+    book = asyncio.run(lookup.by_isbn("9788466664714"))
+    assert book["title"] == "Los niños del agua" and book["year"] == 2019
+    assert len(google_calls) == 2 and google_calls[0]["key"] == "clave123"
+
+
+def test_by_isbn_reports_google_quota_instead_of_not_found(monkeypatch):
+    import httpx
+    monkeypatch.delenv("GOOGLE_BOOKS_API_KEY", raising=False)
+    monkeypatch.setattr(lookup, "GOOGLE_RETRY_DELAYS", (0,))
+
+    def handler(request):
+        if request.url.path == "/books/v1/volumes":
+            return httpx.Response(429, json={})
+        return httpx.Response(200, json={"docs": []}) if request.url.path == "/search.json" else httpx.Response(404)
+
+    _mock_http(monkeypatch, handler)
+    with pytest.raises(lookup.GoogleFailed) as e:
+        asyncio.run(lookup.by_isbn("9788466664714"))
+    assert "GOOGLE_BOOKS_API_KEY" in lookup.failure_note(e.value)
+
+
+def test_by_isbn_uses_google_when_open_library_is_down(monkeypatch):
+    import httpx
+
+    def handler(request):
+        if request.url.path == "/books/v1/volumes":
+            return httpx.Response(200, json=GOOGLE_HIT)
+        return httpx.Response(503)
+
+    _mock_http(monkeypatch, handler)
+    assert asyncio.run(lookup.by_isbn("9788466664714"))["publisher"] == "Ediciones B"
+
+
+def test_lookup_falls_back_to_google_by_title():
+    handler, calls = _ol_handler({"/books/v1/volumes": GOOGLE_HIT})
+    meta = _run_lookup(handler, "Los niños del agua", "Ana Pérez")
+    assert meta["isbn"] == "9788466664714" and meta["cover_url"] == "https://books.google.com/agua.jpg"
+    assert meta["source_name"] == "Google Books"
+    assert calls[-1][1]["q"] == 'intitle:"Los niños del agua" inauthor:"Ana Pérez"'
+
+
+def _jpeg() -> bytes:
+    from PIL import Image
+    out = io.BytesIO()
+    Image.new("RGB", (60, 90), "red").save(out, format="JPEG")
+    return out.getvalue()
+
+
+FROM_COVER = {"title": "Los niños del agua", "author": "Ana Pérez", "publisher": "Ediciones B", "year": "2019",
+              "edition": "", "isbn": "978-84-666-6471-4", "front_cover": 0}
+
+
+def test_unknown_isbn_completed_from_cover_photo(client, monkeypatch):
+    login(client)
+    seen = []
+
+    async def fake_cover(images, client=None):
+        seen.append(len(images))
+        return dict(FROM_COVER)
+
+    monkeypatch.setattr(vision, "read_cover", fake_cover)
+    page = client.post("/isbn/portada", data={"isbn": "9788466664714", "library": "Principal"},
+                       files=[("portada", ("p.jpg", _jpeg(), "image/jpeg")), ("legal", ("l.jpg", _jpeg(), "image/jpeg"))]).text
+    assert seen == [2] and "Claude leyó estos datos" in page
+    assert 'value="Los niños del agua"' in page and 'value="2019"' in page
+    cover = re.search(r'name="cover_url" value="(/portadas/[0-9a-f]+\.jpg)"', page).group(1)
+    assert client.get(cover).headers["content-type"] == "image/jpeg"
+    assert client.get("/portadas/../biblioteca.db").status_code == 404
+
+    client.post("/books/new", data={"title": "Los niños del agua", "isbn": "9788466664714", "cover_url": cover})
+    with db.connect() as conn:
+        b = conn.execute("SELECT cover_url, cover_manual, cover_checked FROM books").fetchone()
+    assert tuple(b) == (cover, 1, 1)  # the background cover search leaves the photo alone
+
+
+def test_book_completed_from_cover_photo(client, monkeypatch):
+    login(client)
+    with db.connect() as conn:
+        book_id = db.add_book(conn, {"title": "Los niños del agua", "publisher": "B"})
+
+    async def fake_cover(images, client=None):
+        return dict(FROM_COVER)
+
+    monkeypatch.setattr(vision, "read_cover", fake_cover)
+    r = client.post(f"/books/{book_id}/portada", files={"portada": ("p.jpg", _jpeg(), "image/jpeg")},
+                    follow_redirects=False)
+    assert "completed=" in r.headers["location"]
+    with db.connect() as conn:
+        b = conn.execute("SELECT * FROM books WHERE id = ?", (book_id,)).fetchone()
+    assert (b["author"], b["publisher"], b["isbn"], b["year"], b["cover_manual"]) == \
+        ("Ana Pérez", "B", "9788466664714", 2019, 1)
+    assert b["cover_url"].startswith("/portadas/")
+
+
+def test_review_item_completed_from_cover_photo(client, monkeypatch):
+    login(client)
+    with db.connect() as conn:
+        scan_id = db.save_scan(conn, "", [{"title": "", "author": "", "isbn": "9788466664714", "matched": False,
+                                           "source": "codigo", "confidence": "low", "cover_url": ""}], "anya")
+    assert 'action="/scan/%d/portada/0"' % scan_id in client.get(f"/scan/{scan_id}").text
+
+    async def fake_cover(images, client=None):
+        return {**FROM_COVER, "front_cover": -1}
+
+    monkeypatch.setattr(vision, "read_cover", fake_cover)
+    client.post(f"/scan/{scan_id}/portada/0", files={"portada": ("p.jpg", _jpeg(), "image/jpeg")})
+    with db.connect() as conn:
+        item = db.load_scan(conn, scan_id)["items"][0]
+    assert (item["title"], item["author"], item["isbn"], item["confidence"]) == \
+        ("Los niños del agua", "Ana Pérez", "9788466664714", "high")

@@ -310,3 +310,11 @@ button.link { background: none; border: 0; color: var(--accent); font: inherit; 
 .scan-row label .grow { display: flex; flex-direction: column; }
 .scan-row small { font-weight: 500; color: var(--muted); font-size: .8rem; }
 .theme-noche .scan-row svg { color: var(--accent); }
+
+/* Foto de la portada */
+.cover-photo { display: flex; flex-direction: column; gap: 8px; }
+.cover-photo .row-link { cursor: pointer; }
+.cover-photo .row-link .grow { display: flex; flex-direction: column; }
+.cover-photo.compact .link-btn { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-weight: 700; font-size: .9rem; flex-direction: row; }
+.cover-photo.compact small { font-weight: 500; color: var(--muted); font-size: .8rem; margin-left: 6px; }
+.cover-photo .row .btn { flex: 1; }

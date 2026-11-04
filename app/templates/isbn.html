@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from "_icons.html" import icon %}
 {% from "_library.html" import library_picker with context %}
+{% from "_cover_photo.html" import cover_photo %}
 {% block content %}
 <section class="card narrow">
   <h1>Código de barras</h1>
@@ -8,6 +9,7 @@
   {% if added %}<p class="notice">Se agregó <a href="/books/{{ added.id }}">{{ added.title }}</a>. Escanea el siguiente.</p>{% endif %}
   {% if dup %}<p class="notice"><a href="/books/{{ dup.id }}">{{ dup.title }}</a> ya está en {{ library }}.</p>{% endif %}
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  {% if from_photo %}<p class="notice">Claude leyó estos datos de la foto. Revísalos antes de agregar.</p>{% endif %}
 
   {% if not found %}
   <form method="post" action="/isbn" class="stack" id="isbn-form">
@@ -45,9 +47,20 @@
       <label>Año <input name="year" value="{{ found.year or '' }}" inputmode="numeric"></label>
     </div>
     {{ library_picker(library) }}
+    {% if not found.title or not found.cover_url %}
+    {{ cover_photo("cover-form", "Foto de la portada" if found.title else "Sacar foto a la portada",
+                   "Claude lee " + ("la portada" if found.title else "el título, el autor y la editorial") + " y la foto queda como portada") }}
+    {% endif %}
     <button class="btn primary">Agregar y escanear otro</button>
     <a href="/isbn" class="center">Descartar</a>
   </form>
+  <form id="cover-form" method="post" action="/isbn/portada" enctype="multipart/form-data" hidden>
+    {% for f in ("isbn", "title", "author", "publisher", "edition", "cover_url") %}<input type="hidden" name="{{ f }}" value="{{ found[f] or '' }}">{% endfor %}
+    <input type="hidden" name="year" value="{{ found.year or '' }}">
+    <input type="hidden" name="shelf" value="{{ shelf }}">
+    <input type="hidden" name="library" value="{{ library }}">
+  </form>
+  <script src="/static/cover.js"></script>
   {% endif %}
 </section>
 {% endblock %}

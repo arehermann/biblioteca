@@ -8,6 +8,7 @@ from pathlib import Path
 
 DATA_DIR = Path(os.environ.get("BIBLIOTECA_DATA", "./data"))
 LIBRARIES = ("Principal", "Niños")
+PHOTO_COVER_PREFIX = "/portadas/"  # covers photographed by us, stored in DATA_DIR/portadas
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -157,6 +158,9 @@ def add_book(conn, book: dict, added_by: str = "") -> int:
         " :library, :notes, :source, :mk, :added_by)",
         {**values, "mk": match_key(values["title"], values["author"]), "added_by": added_by},
     )
+    if values["cover_url"].startswith(PHOTO_COVER_PREFIX):
+        # A photo of the copy itself: the background cover search must never replace it.
+        conn.execute("UPDATE books SET cover_manual = 1, cover_checked = 1 WHERE id = ?", (cur.lastrowid,))
     return cur.lastrowid
 
 
@@ -191,6 +195,10 @@ def load_scan(conn, scan_id: int):
     if row is None:
         return None
     return {"id": row["id"], "shelf": row["shelf"], "library": row["library"], "items": json.loads(row["items"])}
+
+
+def update_scan_items(conn, scan_id: int, items: list) -> None:
+    conn.execute("UPDATE scans SET items = ? WHERE id = ?", (json.dumps(items, ensure_ascii=False), scan_id))
 
 
 def active_loan(conn, book_id: int):
