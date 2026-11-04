@@ -81,15 +81,20 @@
   let stream = null, timer = null, busy = false, lastCode = '', lastAt = 0;
   const canvas = document.createElement('canvas');
 
-  // zxing has to be handed pixels: the middle band of the frame, where the guide box is, at a modest size.
+  // zxing has to be handed pixels: the part of the frame around the guide box, at a modest size. The video fills
+  // its box with object-fit: cover, so only a centered part of the camera's frame is on screen (most of a tall
+  // phone frame is cut off); the guide sits in the middle of that visible part.
   function frame() {
-    const vw = video.videoWidth, vh = video.videoHeight;
-    if (!vw) return null;
-    const cropH = Math.round(vh * 0.5), y = Math.round((vh - cropH) / 2);
-    const scale = Math.min(1, 960 / vw);
-    canvas.width = Math.round(vw * scale);
-    canvas.height = Math.round(cropH * scale);
-    canvas.getContext('2d', { willReadFrequently: true }).drawImage(video, 0, y, vw, cropH, 0, 0, canvas.width, canvas.height);
+    const vw = video.videoWidth, vh = video.videoHeight, bw = video.clientWidth, bh = video.clientHeight;
+    if (!vw || !bw || !bh) return null;
+    const cover = Math.max(bw / vw, bh / vh);
+    const shownW = bw / cover, shownH = bh / cover;
+    const sw = shownW * 0.9, sh = shownH * 0.5;
+    const sx = (vw - sw) / 2, sy = (vh - sh) / 2;
+    const scale = Math.min(1, 960 / sw);
+    canvas.width = Math.round(sw * scale);
+    canvas.height = Math.round(sh * scale);
+    canvas.getContext('2d', { willReadFrequently: true }).drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
     return canvas;
   }
 
@@ -124,6 +129,7 @@
     video.srcObject = stream;
     await video.play().catch(() => {});
     live.hidden = false;
+    live.scrollIntoView({ block: 'start', behavior: 'smooth' });
     startBtn.hidden = true;
     stopBtn.hidden = false;
     statusLine.textContent = 'Pon el código dentro del recuadro, horizontal. Cuando suene, pasa al siguiente libro.';

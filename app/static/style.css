@@ -274,8 +274,10 @@ button.link { background: none; border: 0; color: var(--accent); font: inherit; 
 .found .cover { width: 96px; flex: none; }
 /* "Varios códigos": the live camera with its guide box, and the list of scanned ISBNs. */
 [hidden] { display: none !important; }
-.live { position: relative; border-radius: var(--radius); overflow: hidden; background: #000; border: var(--bw) solid var(--line); }
-.live video { display: block; width: 100%; max-height: 52vh; object-fit: cover; }
+.live { position: relative; width: 100%; min-width: 0; height: min(62vw, 40vh, 340px); border-radius: var(--radius); overflow: hidden;
+        background: #000; border: var(--bw) solid var(--line); }
+/* Out of the flow, so the camera's own size (often 720×1280 on phones) can't stretch the page; it just fills the box. */
+.live video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .live-guide { position: absolute; left: 10%; right: 10%; top: 30%; bottom: 30%; border: 3px solid rgba(255, 255, 255, .85);
               border-radius: 12px; box-shadow: 0 0 0 999px rgba(0, 0, 0, .35); pointer-events: none; }
 .live-flash { position: absolute; left: 12px; right: 12px; bottom: 12px; margin: 0; padding: 10px 14px; border-radius: 12px;
