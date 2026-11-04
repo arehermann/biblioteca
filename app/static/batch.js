@@ -119,7 +119,7 @@
     statusLine.textContent = 'Abriendo la cámara…';
     try {
       stream = await navigator.mediaDevices.getUserMedia({
-        audio: false, video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false, video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
       });
     } catch (e) {
       stream = null;
@@ -128,13 +128,49 @@
     }
     video.srcObject = stream;
     await video.play().catch(() => {});
+    await tuneCamera();
     live.hidden = false;
     live.scrollIntoView({ block: 'start', behavior: 'smooth' });
     startBtn.hidden = true;
     stopBtn.hidden = false;
-    statusLine.textContent = 'Pon el código dentro del recuadro, horizontal. Cuando suene, pasa al siguiente libro.';
+    statusLine.textContent = 'Pon el código dentro del recuadro, horizontal, a un palmo de distancia. Si se ve borroso, ' +
+                             'aleja un poco el libro o toca la imagen para enfocar. Cuando suene, pasa al siguiente.';
     timer = setInterval(tick, Barcode.native ? 120 : 220);
   }
+
+  // Phones often open the camera focused far away, and can't focus closer than ~10 cm at all. Where the browser
+  // lets us (Chrome on Android), ask for continuous autofocus and a little zoom, so the book can be held at a
+  // comfortable distance and still fill the guide box. Safari ignores these, and higher resolution is what helps there.
+  function track() { return stream && stream.getVideoTracks()[0]; }
+  function caps() {
+    const t = track();
+    try { return (t && t.getCapabilities && t.getCapabilities()) || {}; } catch (e) { return {}; }
+  }
+
+  async function tuneCamera() {
+    const c = caps(), wanted = {};
+    if ((c.focusMode || []).includes('continuous')) wanted.focusMode = 'continuous';
+    if (c.zoom && c.zoom.max >= 1.5) wanted.zoom = Math.min(2, c.zoom.max);
+    if (!Object.keys(wanted).length) return;
+    try { await track().applyConstraints({ advanced: [wanted] }); } catch (e) { /* keep the defaults */ }
+  }
+
+  // Tap the picture to focus there, then go back to continuous focus.
+  video.addEventListener('click', async e => {
+    const c = caps();
+    const modes = c.focusMode || [];
+    if (!modes.includes('single-shot') && !modes.includes('continuous')) return;
+    const r = video.getBoundingClientRect();
+    const point = { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
+    try {
+      await track().applyConstraints({ advanced: [{ focusMode: modes.includes('single-shot') ? 'single-shot' : 'continuous',
+                                                    pointsOfInterest: [point] }] });
+      show('Enfocando…', 'ok');
+      if (modes.includes('single-shot') && modes.includes('continuous')) {
+        setTimeout(() => { if (track()) track().applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {}); }, 1500);
+      }
+    } catch (err) { /* this camera can't focus on a point */ }
+  });
 
   function stop() {
     clearInterval(timer);
