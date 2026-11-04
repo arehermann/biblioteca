@@ -40,6 +40,6 @@
   <p class="muted small">¿Uno solo? <a href="/isbn">Escanear un código</a>.</p>
 </section>
 <script src="/static/vendor/zxing-0.21.3.min.js"></script>
-<script src="/static/barcode.js"></script>
-<script src="/static/batch.js"></script>
+<script src="{{ static('barcode.js') }}"></script>
+<script src="{{ static('batch.js') }}"></script>
 {% endblock %}

@@ -19,7 +19,7 @@
   {% else %}
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap">
   {% endif %}
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="{{ static('style.css') }}">
 </head>
 <body>
   <main{% if user %} class="with-dock"{% endif %}>{% block content %}{% endblock %}</main>

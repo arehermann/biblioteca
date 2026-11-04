@@ -51,6 +51,16 @@ def _dias(iso: str | None) -> int:
     return (date.today() - date.fromisoformat(iso[:10])).days if iso else 0
 
 
+def _static(path: str) -> str:
+    """URL of a file in app/static that changes when the file does, so phones never keep an old copy after an update."""
+    try:
+        version = int((BASE / "static" / path).stat().st_mtime)
+    except OSError:
+        version = 0
+    return f"/static/{path}?v={version}"
+
+
+templates.env.globals["static"] = _static
 templates.env.filters["fecha"] = _fecha
 templates.env.filters["dias"] = _dias
 

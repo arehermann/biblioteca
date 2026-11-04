@@ -500,6 +500,13 @@ def test_scan_many_barcodes_then_review_together(client, monkeypatch):
     assert rows["Ficciones"]["source"] == "codigo" and rows["Diario de un gato"]["isbn"] == "9788499089508"
 
 
+def test_static_files_are_versioned_so_phones_reload_them(client):
+    login(client)
+    page = client.get("/isbn/lote").text
+    assert '/static/style.css?v=' in page and '/static/batch.js?v=' in page
+    assert '"/static/batch.js"' not in page
+
+
 def test_match_key_ignores_series_and_edition_notes():
     assert db.match_key("Harry Potter y la piedra filosofal (Harry Potter, #1)", "J.K. Rowling") == \
         db.match_key("Harry Potter y la piedra filosofal", "J. K. Rowling")
