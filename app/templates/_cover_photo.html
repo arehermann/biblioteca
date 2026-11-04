@@ -1,0 +1,16 @@
+{% from "_icons.html" import icon %}
+{# Photos of a book's cover (and optionally its copyright page) for Claude to read. The inputs belong to the form
+   named form_id, which can sit elsewhere on the page, so this works inside another form too. #}
+{% macro cover_photo(form_id, label, hint, compact=False) %}
+<div class="cover-photo{% if compact %} compact{% endif %}" data-cover>
+  <label class="{{ 'link-btn' if compact else 'row-link scan-row' }}">
+    <input type="file" name="portada" accept="image/*" capture="environment" form="{{ form_id }}" hidden data-cover-front>
+    {{ icon('camera', 18 if compact else 20) }}
+    <span class="grow"><span>{{ label }}</span>{% if hint or not compact %}<small data-cover-status role="status">{{ hint }}</small>{% endif %}</span>
+  </label>
+  <div class="row" data-cover-next hidden>
+    <label class="btn"><input type="file" name="legal" accept="image/*" capture="environment" form="{{ form_id }}" hidden data-cover-legal>Sumar página legal</label>
+    <button class="btn primary" form="{{ form_id }}">Leer ahora</button>
+  </div>
+</div>
+{% endmacro %}

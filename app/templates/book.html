@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_icons.html" import icon %}
+{% from "_cover_photo.html" import cover_photo %}
 {% block content %}
 {% if not book %}
 <section class="card narrow">
@@ -75,6 +76,12 @@
     </label>
     {% if book.isbn and missing %}<button class="link">Completar con el ISBN</button>{% endif %}
   </form>
+  {% if missing %}
+  {{ cover_photo("cover-form", "Foto de la portada para completar datos", "Para libros que no aparecen en ningún catálogo") }}
+  <form id="cover-form" method="post" action="/books/{{ book.id }}/portada" enctype="multipart/form-data" hidden></form>
+  <script src="/static/cover.js"></script>
+  {% endif %}
+  {% if photo_error %}<p class="error">{{ photo_error }}</p>{% endif %}
   {% if completed is not none %}
     {% if completed %}<p class="notice">Se completaron: {{ completed }}.</p>
     {% else %}<p class="error">No encontré más datos para ese ISBN en Open Library ni en Google Books.</p>{% endif %}

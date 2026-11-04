@@ -1,8 +1,10 @@
-"""Looks up book metadata (ISBN, cover, year, publisher, edition) on Open Library.
+"""Looks up book metadata (ISBN, cover, year, publisher, edition) on Open Library, with Google Books as fallback.
 
 A search result describes the work, so its cover can belong to any edition. When the ISBN is known we
 read that exact edition instead, so the cover and publisher match the copy on the shelf."""
 import asyncio
+import logging
+import os
 import re
 
 import httpx
@@ -51,6 +53,9 @@ def _edition_meta(ed: dict) -> dict:
         "work_key": (ed.get("works") or [{}])[0].get("key", ""),
         "edition_key": ed.get("key", ""),
     }
+
+
+log = logging.getLogger("biblioteca.lookup")
 
 
 class LookupFailed(Exception):
@@ -107,7 +112,14 @@ async def lookup(client: httpx.AsyncClient, title: str, author: str = "", isbn: 
         if not docs:
             # Spine authors are often partial; retry with title only.
             docs = await _search(client, title=title)
-    return _to_meta(docs[0]) if docs else None
+    if docs:
+        return _to_meta(docs[0])
+    # Open Library has nothing; Google Books knows many Spanish-language editions it lacks.
+    try:
+        return await google_lookup(client, title, author, isbn)
+    except GoogleFailed as e:
+        log.warning("Google Books no respondió: %s", e)
+        return None
 
 
 async def lookup_many(items: list[dict], concurrency: int = 4, strict: bool = False) -> list:
@@ -162,49 +174,130 @@ def clean_isbn(text: str) -> str:
     return ""
 
 
-async def _google_books(client: httpx.AsyncClient, isbn: str) -> dict | None:
-    """Google Books knows many Spanish-language editions Open Library lacks. Best effort: errors mean no match."""
-    try:
-        r = await client.get(GOOGLE_BOOKS, params={"q": f"isbn:{isbn}"}, timeout=15)
-        items = r.json().get("items") if r.status_code == 200 else None
-    except (httpx.HTTPError, ValueError):
-        return None
-    if not items:
-        return None
-    info = items[0].get("volumeInfo", {})
-    cover = (info.get("imageLinks") or {}).get("thumbnail", "").replace("http://", "https://")
+GOOGLE_RETRY_DELAYS = (1.0, 3.0)
+
+
+class GoogleFailed(LookupFailed):
+    """Google Books answered with an error (often its daily quota) rather than "no such book"."""
+
+
+async def _google_items(client: httpx.AsyncClient, q: str) -> list[dict]:
+    """Google Books results for a query. Without GOOGLE_BOOKS_API_KEY every keyless app on the internet shares one
+    daily quota, which runs out early in the day, so the key matters. A busy answer (429 or 5xx) is retried."""
+    params = {"q": q, "maxResults": 1, "printType": "books"}
+    key = os.environ.get("GOOGLE_BOOKS_API_KEY", "").strip()
+    if key:
+        params["key"] = key
+    error = ""
+    # Without a key a 429 means the shared daily quota is spent, which waiting a few seconds won't change.
+    for delay in (*(GOOGLE_RETRY_DELAYS if key else ()), None):
+        try:
+            r = await client.get(GOOGLE_BOOKS, params=params, timeout=15)
+        except httpx.HTTPError as e:
+            error = str(e) or type(e).__name__
+        else:
+            if r.status_code == 200:
+                try:
+                    return r.json().get("items") or []
+                except ValueError as e:
+                    raise GoogleFailed("respuesta ilegible") from e
+            if r.status_code == 404:
+                return []
+            error = f"HTTP {r.status_code}"
+            if r.status_code not in (429, 500, 502, 503, 504):
+                break  # e.g. 400/403: a bad key won't fix itself by retrying
+        if delay is None:
+            break
+        await asyncio.sleep(delay)
+    raise GoogleFailed(error)
+
+
+def _google_info(item: dict) -> dict:
+    info = item.get("volumeInfo", {})
+    links = info.get("imageLinks") or {}
+    cover = (links.get("thumbnail") or links.get("smallThumbnail") or "").replace("http://", "https://")
+    ids = {i.get("type"): i.get("identifier", "") for i in info.get("industryIdentifiers", [])}
     return {
         "title": info.get("title", ""),
         "author": ", ".join(info.get("authors", [])[:2]),
         "publisher": info.get("publisher", ""),
         "year": _year(info.get("publishedDate", "")),
         "cover_url": cover,
+        "isbn": clean_isbn(ids.get("ISBN_13") or ids.get("ISBN_10") or ""),
     }
+
+
+def failure_note(e: LookupFailed) -> str:
+    """What to tell the person when a lookup failed."""
+    if not isinstance(e, GoogleFailed):
+        return "Open Library no respondió"
+    if not os.environ.get("GOOGLE_BOOKS_API_KEY", "").strip():
+        return "Google Books no respondió (falta GOOGLE_BOOKS_API_KEY en .env)"
+    return "Google Books no respondió"
+
+
+async def _google_books(client: httpx.AsyncClient, isbn: str) -> dict | None:
+    """The edition with this ISBN on Google Books, None when it has none. Raises GoogleFailed on errors."""
+    items = await _google_items(client, f"isbn:{isbn}")
+    if not items:
+        return None
+    book = _google_info(items[0])
+    book.pop("isbn")
+    return book
+
+
+async def google_lookup(client: httpx.AsyncClient, title: str, author: str = "", isbn: str = "") -> dict | None:
+    """Google Books as a last resort for lookup(), in the same shape as an Open Library match."""
+    items = []
+    if isbn:
+        items = await _google_items(client, f"isbn:{isbn}")
+    if not items and title:
+        q = f'intitle:"{title}"' + (f' inauthor:"{author.split(",")[0].strip()}"' if author else "")
+        items = await _google_items(client, q)
+    if not items:
+        return None
+    g = _google_info(items[0])
+    return {"ol_title": g["title"], "ol_author": g["author"], "isbn": g["isbn"] or isbn, "year": g["year"],
+            "publisher": g["publisher"], "cover_url": g["cover_url"], "edition": "", "work_key": "",
+            "source_name": "Google Books"}
 
 
 async def by_isbn(isbn: str) -> dict | None:
     """Everything known about the edition with this ISBN, for adding a book from its barcode.
 
     Open Library's edition record has the cover and publisher but names authors only by key, so the author comes
-    from its search; Google Books fills whatever Open Library leaves empty. Raises LookupFailed when Open Library
-    can't be reached."""
+    from its search; Google Books fills whatever Open Library leaves empty, or everything when Open Library is
+    down. Raises LookupFailed (GoogleFailed when it was Google) when the book wasn't found because a source
+    couldn't be reached, so the person knows to try again rather than type it all in."""
+    book = {"title": "", "author": "", "publisher": "", "edition": "", "year": None, "cover_url": ""}
+    failure = None
     async with httpx.AsyncClient(headers=HEADERS) as client:
-        edition = await edition_by_isbn(client, isbn)
-        docs = await _search(client, isbn=isbn)
-        doc = _to_meta(docs[0]) if docs else {}
-        book = {
-            "title": (edition or {}).get("ol_title") or doc.get("ol_title", ""),
-            "author": doc.get("ol_author", ""),
-            "publisher": (edition or {}).get("publisher") or doc.get("publisher", ""),
-            "edition": (edition or {}).get("edition", ""),
-            "year": (edition or {}).get("year") or doc.get("year"),
-            "cover_url": (edition or {}).get("cover_url") or doc.get("cover_url", ""),
-        }
+        try:
+            edition = await edition_by_isbn(client, isbn) or {}
+            docs = await _search(client, isbn=isbn)
+            doc = _to_meta(docs[0]) if docs else {}
+            book = {
+                "title": edition.get("ol_title") or doc.get("ol_title", ""),
+                "author": doc.get("ol_author", ""),
+                "publisher": edition.get("publisher") or doc.get("publisher", ""),
+                "edition": edition.get("edition", ""),
+                "year": edition.get("year") or doc.get("year"),
+                "cover_url": edition.get("cover_url") or doc.get("cover_url", ""),
+            }
+        except LookupFailed as e:
+            failure = e
         if not all(book[k] for k in ("title", "author", "publisher", "cover_url")):
-            google = await _google_books(client, isbn) or {}
+            try:
+                google = await _google_books(client, isbn) or {}
+            except GoogleFailed as e:
+                google = {}
+                log.warning("Google Books no respondió para %s: %s", isbn, e)
+                failure = failure or e
             for k, v in google.items():
                 book[k] = book[k] or v
     if not book["title"]:
+        if failure:
+            raise failure
         return None
     return {**book, "isbn": isbn}
 

@@ -1,6 +1,8 @@
 import csv
 import io
 import os
+import re
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import date
@@ -11,6 +13,8 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
+
+from PIL import Image, ImageOps
 
 from . import auth, covers, db, lookup, storygraph, vision
 
@@ -237,7 +241,8 @@ FIELD_NAMES = {"author": "autor", "isbn": "ISBN", "publisher": "editorial", "yea
 
 
 @app.get("/books/{book_id}", response_class=HTMLResponse)
-def book_page(request: Request, book_id: int, saved: int = 0, completed: str | None = None):
+def book_page(request: Request, book_id: int, saved: int = 0, completed: str | None = None,
+              photo_error: str = ""):
     with db.connect() as conn:
         book = conn.execute("SELECT * FROM books WHERE id = ?", (book_id,)).fetchone()
         if book is None:
@@ -245,7 +250,7 @@ def book_page(request: Request, book_id: int, saved: int = 0, completed: str | N
         loans = conn.execute("SELECT * FROM loans WHERE book_id = ? ORDER BY id DESC", (book_id,)).fetchall()
         return render(request, "book.html", book=book, shelves=shelves(conn), saved=saved, library=book["library"],
                       loan=db.active_loan(conn, book_id), loans=loans, borrowers=db.borrowers(conn),
-                      today=date.today().isoformat(), completed=completed,
+                      today=date.today().isoformat(), completed=completed, photo_error=photo_error,
                       missing=[name for f, name in FIELD_NAMES.items() if not book[f]])
 
 
@@ -533,11 +538,12 @@ async def isbn_lookup(request: Request, isbn: str = Form(""), library: str = For
     error = None
     try:
         found = await lookup.by_isbn(code)
-    except lookup.LookupFailed:
-        found, error = None, "Open Library no respondió. Puedes completar los datos a mano."
+    except lookup.LookupFailed as e:
+        found, error = None, f"{lookup.failure_note(e)}. Vuelve a buscar en un rato o saca una foto a la portada."
     if found is None:
         found = {"title": "", "author": "", "publisher": "", "edition": "", "year": None, "cover_url": "", "isbn": code}
-        error = error or "No encontré este ISBN en Open Library ni en Google Books. Puedes completar los datos a mano."
+        error = error or ("No encontré este ISBN en Open Library ni en Google Books. Saca una foto a la portada"
+                          " y Claude completa los datos, o escríbelos a mano.")
     return isbn_form(request, found=found, shelf=shelf, error=error)
 
 
@@ -575,7 +581,7 @@ async def isbn_batch(request: Request, isbns: str = Form(""), library: str = For
                     "publisher": book.get("publisher", ""), "edition": book.get("edition", ""),
                     "year": book.get("year"), "cover_url": book.get("cover_url", ""), "isbn": code,
                     "matched": bool(book), "source": "codigo", "confidence": "high" if book else "low",
-                    "note": "" if book else ("Open Library no respondió" if failed else
+                    "note": "" if book else (lookup.failure_note(found) if failed else
                                              "No encontré este ISBN en Open Library ni en Google Books")}
             dup = conn.execute("SELECT id FROM books WHERE isbn = ? AND library = ?", (code, library)).fetchone()
             if dup is None and book:
@@ -584,6 +590,139 @@ async def isbn_batch(request: Request, isbns: str = Form(""), library: str = For
             items.append(item)
         scan_id = db.save_scan(conn, shelf, items, request.session["user"], library)
     return back(f"/scan/{scan_id}")
+
+
+# --- Foto de la portada ------------------------------------------------------
+# For books neither Open Library nor Google Books knows: Claude reads the cover (and the copyright page, if
+# photographed too) and the cover photo itself becomes the book's cover.
+
+COVER_SIDE = 800
+
+
+def photo_covers_dir() -> Path:
+    return db.DATA_DIR / "portadas"
+
+
+def save_cover_photo(data: bytes) -> str:
+    img = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
+    img.thumbnail((COVER_SIDE, COVER_SIDE))
+    photo_covers_dir().mkdir(parents=True, exist_ok=True)
+    name = f"{uuid.uuid4().hex}.jpg"
+    img.save(photo_covers_dir() / name, format="JPEG", quality=82)
+    return db.PHOTO_COVER_PREFIX + name
+
+
+@app.get("/portadas/{name}")
+def photo_cover(name: str):
+    path = photo_covers_dir() / name
+    if not re.fullmatch(r"[0-9a-f]{32}\.jpg", name) or not path.exists():
+        return Response(status_code=404)
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "max-age=31536000, immutable"})
+
+
+async def read_cover_photos(form) -> tuple[dict | None, str | None]:
+    """The book in the uploaded photos (fields "portada" and "legal"), or (None, error message)."""
+    images = []
+    for field in ("portada", "legal"):
+        upload = form.get(field)
+        if upload is not None and getattr(upload, "filename", ""):
+            data = await upload.read()
+            if data:
+                images.append(data)
+    if not images:
+        return None, "Saca una foto a la portada."
+    try:
+        found = await vision.read_cover(images)
+    except vision.VisionError as e:
+        return None, str(e)
+    except Exception:
+        return None, "No se pudo leer la foto. ¿Es una imagen en JPG o PNG?"
+    if not found["title"]:
+        return None, "Claude no pudo leer el título en la foto. Prueba con otra, más de cerca y con buena luz."
+    year = lookup._year(found["year"])
+    book = {"title": found["title"], "author": found["author"], "publisher": found["publisher"],
+            "edition": found["edition"], "year": year, "isbn": lookup.clean_isbn(found["isbn"]), "cover_url": ""}
+    if found["front_cover"] >= 0:
+        try:
+            book["cover_url"] = save_cover_photo(images[found["front_cover"]])
+        except Exception:
+            pass  # the details are still worth keeping without the picture
+    return book, None
+
+
+def fill_empty(target: dict, found: dict, fields) -> list[str]:
+    """Copies found values into target's empty fields; returns the fields filled."""
+    filled = []
+    for f in fields:
+        if found.get(f) and not target.get(f):
+            target[f] = found[f]
+            filled.append(f)
+    return filled
+
+
+@app.post("/isbn/portada", response_class=HTMLResponse)
+async def isbn_cover_photo(request: Request):
+    """The /isbn page's book, completed from photos of its cover."""
+    form = await request.form()
+    current = {f: (form.get(f) or "").strip() for f in ("isbn", "title", "author", "publisher", "edition",
+                                                          "cover_url")}
+    year = (form.get("year") or "").strip()
+    current["year"] = int(year) if year.isdigit() else None
+    remember_library(request, form.get("library"))
+    shelf = (form.get("shelf") or "").strip()
+    found, error = await read_cover_photos(form)
+    if found:
+        if not current["isbn"]:
+            current["isbn"] = found["isbn"]
+        fill_empty(current, found, ("title", "author", "publisher", "edition", "year", "cover_url"))
+    return isbn_form(request, found=current, shelf=shelf, error=error, from_photo=bool(found))
+
+
+@app.post("/books/{book_id}/portada")
+async def book_cover_photo(request: Request, book_id: int):
+    """Fills a book's empty fields from photos of its cover; the photo becomes the cover if it had none."""
+    with db.connect() as conn:
+        book = conn.execute("SELECT * FROM books WHERE id = ?", (book_id,)).fetchone()
+    if book is None:
+        return back("/")
+    found, error = await read_cover_photos(await request.form())
+    if not found:
+        return back(f"/books/{book_id}?photo_error={quote(error)}")
+    values = {f: found[f] for f in ("author", "isbn", "publisher", "edition", "year", "cover_url")
+              if found[f] and not book[f]}
+    if not values:
+        return back(f"/books/{book_id}?photo_error={quote('La foto no agregó datos que le falten a este libro.')}")
+    if values:
+        with db.connect() as conn:
+            extra = ", cover_manual = 1, cover_checked = 1" if "cover_url" in values else ""
+            conn.execute(f"UPDATE books SET {', '.join(f'{f} = ?' for f in values)}{extra} WHERE id = ?",
+                         [*values.values(), book_id])
+    names = {**FIELD_NAMES, "edition": "edición"}
+    return back(f"/books/{book_id}?completed={quote(', '.join(names[f] for f in values))}")
+
+
+@app.post("/scan/{scan_id}/portada/{index}")
+async def scan_item_cover_photo(request: Request, scan_id: int, index: int):
+    """Completes one book on the review page from photos of its cover."""
+    form = await request.form()
+    with db.connect() as conn:
+        data = db.load_scan(conn, scan_id)
+    if data is None:
+        return back("/scan")
+    if not 0 <= index < len(data["items"]):
+        return back(f"/scan/{scan_id}")
+    found, error = await read_cover_photos(form)
+    item = data["items"][index]
+    if found:
+        if not item.get("isbn"):
+            item["isbn"] = found["isbn"]
+        fill_empty(item, found, ("title", "author", "publisher", "edition", "year", "cover_url"))
+        item.update(confidence="high", note="Datos leídos de la foto", photo_error="")
+    else:
+        item["photo_error"] = error
+    with db.connect() as conn:
+        db.update_scan_items(conn, scan_id, data["items"])
+    return back(f"/scan/{scan_id}#libro-{index}")
 
 
 @app.get("/import", response_class=HTMLResponse)
