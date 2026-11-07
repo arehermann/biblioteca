@@ -496,7 +496,16 @@ async def save_scan(request: Request, scan_id: int):
             return back("/scan")
         shelf = (form.get("shelf") or data["shelf"]).strip()
         library = db.clean_library(form.get("library") or data["library"])
+        merged = 0
         for i, item in enumerate(data["items"]):
+            if form.get(f"merge_{i}") and item.get("duplicate_id"):
+                # Recomputed now, against the book as it is, with the shelf as finally chosen.
+                dup = conn.execute("SELECT * FROM books WHERE id = ?", (item["duplicate_id"],)).fetchone()
+                if dup is not None:
+                    changes = {c["field"]: c["new"] for c in merge_plan(dup, item, item["isbn"], shelf)
+                               if c["checked"]}
+                    apply_merge(conn, dup["id"], changes)
+                    merged += bool(changes)
             if not form.get(f"add_{i}"):
                 continue
             title = (form.get(f"title_{i}") or item["title"]).strip()
@@ -512,12 +521,74 @@ async def save_scan(request: Request, scan_id: int):
             }, request.session["user"])
             added += 1
         conn.execute("DELETE FROM scans WHERE id = ?", (scan_id,))
-    return back(f"/?added={added}&library={quote(library)}" + (f"&shelf={quote(shelf)}" if shelf else ""))
+    return back(f"/?added={added}&library={quote(library)}" + (f"&shelf={quote(shelf)}" if shelf else "")
+                + (f"&merged={merged}" if merged else ""))
 
 
 # --- Importar y exportar --------------------------------------------------
 
 # --- Código de barras -------------------------------------------------------
+
+# A barcode scanned for a book that is already catalogued completes that book instead of adding it again: many
+# books came from StoryGraph or a shelf photo with little more than a title, and the barcode knows much more.
+MERGE_FIELDS = {"title": "título", "author": "autor", "isbn": "ISBN", "publisher": "editorial", "edition": "edición",
+                "year": "año", "cover_url": "portada", "shelf": "estante"}
+EDITION_FIELDS = ("publisher", "edition", "year", "cover_url")
+
+
+def catalogued_copy(conn, code: str, found: dict | None, library: str):
+    """The book a scanned barcode is, if already in this library: by ISBN, or else by title and author.
+    Returns (book, can_merge); a title match with another ISBN is another edition, which isn't merged."""
+    book = conn.execute("SELECT * FROM books WHERE isbn = ? AND library = ? ORDER BY id LIMIT 1",
+                        (code, library)).fetchone()
+    if book is not None:
+        return book, True
+    if not found or not found.get("title"):
+        return None, False
+    book = conn.execute("SELECT * FROM books WHERE match_key = ? AND library = ? ORDER BY isbn != '', id LIMIT 1",
+                        (db.match_key(found["title"], found.get("author", "")), library)).fetchone()
+    if book is None:
+        return None, False
+    return book, not book["isbn"]
+
+
+def merge_plan(book, found: dict, code: str, shelf: str = "") -> list[dict]:
+    """What the barcode's data would change in a catalogued book, field by field. Empty fields are filled; when
+    the book had no ISBN, the copy in hand defines its edition, so publisher, edition, year and cover are replaced
+    too. Anything else that differs (a title or author written another way) is offered but not ticked. Notes,
+    library and loans are never touched, a shelf only when the book had none, and a cover picked by hand stays."""
+    new_edition = not book["isbn"]
+    offered = {**found, "isbn": code, "shelf": shelf}
+    plan = []
+    for f, name in MERGE_FIELDS.items():
+        old, new = book[f], offered.get(f)
+        if not new or new == old:
+            continue
+        if f in ("title", "author") and old and db._fold(old).split() == db._fold(str(new)).split():
+            continue
+        if f == "cover_url" and book["cover_manual"]:
+            continue
+        if old and f in ("shelf", "isbn"):
+            continue
+        checked = not old or (new_edition and f in EDITION_FIELDS)
+        plan.append({"field": f, "name": name, "old": old or "", "new": new, "checked": checked})
+    return plan
+
+
+def apply_merge(conn, book_id: int, changes: dict) -> None:
+    if not changes:
+        return
+    if "year" in changes:
+        year = str(changes["year"] or "").strip()
+        changes["year"] = int(year) if year.isdigit() else None
+    conn.execute(f"UPDATE books SET {', '.join(f'{f} = ?' for f in changes)} WHERE id = ?",
+                 [*changes.values(), book_id])
+    if "cover_url" in changes:
+        photo = str(changes["cover_url"]).startswith(db.PHOTO_COVER_PREFIX)
+        conn.execute("UPDATE books SET cover_checked = 1, cover_manual = ? WHERE id = ?", (int(photo), book_id))
+    if "title" in changes or "author" in changes:
+        row = conn.execute("SELECT title, author FROM books WHERE id = ?", (book_id,)).fetchone()
+        conn.execute("UPDATE books SET match_key = ? WHERE id = ?", (db.match_key(row["title"], row["author"]), book_id))
 
 def isbn_form(request: Request, **ctx):
     with db.connect() as conn:
@@ -526,10 +597,12 @@ def isbn_form(request: Request, **ctx):
 
 
 @app.get("/isbn", response_class=HTMLResponse)
-def isbn_page(request: Request, added: int = 0):
+def isbn_page(request: Request, added: int = 0, merged: int = 0, filled: str = ""):
     with db.connect() as conn:
         added_book = conn.execute("SELECT id, title FROM books WHERE id = ?", (added,)).fetchone() if added else None
-    return isbn_form(request, added=added_book, shelf=request.session.get("isbn_shelf", ""))
+        merged_book = conn.execute("SELECT id, title FROM books WHERE id = ?", (merged,)).fetchone() if merged else None
+    return isbn_form(request, added=added_book, merged=merged_book, filled=filled,
+                     shelf=request.session.get("isbn_shelf", ""))
 
 
 @app.post("/isbn", response_class=HTMLResponse)
@@ -541,20 +614,37 @@ async def isbn_lookup(request: Request, isbn: str = Form(""), library: str = For
     if not code:
         return isbn_form(request, isbn=isbn, shelf=shelf,
                          error="Ese número no es un ISBN. Revisa que sea el código de barras que empieza con 978 o 979.")
-    with db.connect() as conn:
-        dup = conn.execute("SELECT id, title FROM books WHERE isbn = ? AND library = ?", (code, library)).fetchone()
-    if dup:
-        return isbn_form(request, isbn="", shelf=shelf, dup=dup)
     error = None
     try:
         found = await lookup.by_isbn(code)
     except lookup.LookupFailed as e:
         found, error = None, f"{lookup.failure_note(e)}. Vuelve a buscar en un rato o saca una foto a la portada."
+    with db.connect() as conn:
+        dup, can_merge = catalogued_copy(conn, code, found, library)
+    if dup is not None and can_merge:
+        # Already catalogued: offer what the barcode adds to it instead of adding it twice.
+        plan = merge_plan(dup, found, code, shelf) if found else []
+        return isbn_form(request, isbn="", shelf=shelf, dup=dup, plan=plan, found_for_dup=found or {"isbn": code})
+    if dup is not None:
+        error = error or f"Ya tienes otra edición de este libro en {library}."
     if found is None:
         found = {"title": "", "author": "", "publisher": "", "edition": "", "year": None, "cover_url": "", "isbn": code}
         error = error or ("No encontré este ISBN en Open Library ni en Google Books. Saca una foto a la portada"
                           " y Claude completa los datos, o escríbelos a mano.")
-    return isbn_form(request, found=found, shelf=shelf, error=error)
+    return isbn_form(request, found=found, shelf=shelf, error=error, other_edition=dup)
+
+
+@app.post("/books/{book_id}/unificar")
+async def merge_scanned(request: Request, book_id: int):
+    """Applies the changes ticked on the /isbn page to a book that was already catalogued."""
+    form = await request.form()
+    changes = {f: (form.get(f"new_{f}") or "").strip() for f in form.getlist("use") if f in MERGE_FIELDS}
+    changes = {f: v for f, v in changes.items() if v}
+    with db.connect() as conn:
+        if conn.execute("SELECT id FROM books WHERE id = ?", (book_id,)).fetchone() is None:
+            return back("/isbn")
+        apply_merge(conn, book_id, changes)
+    return back(f"/isbn?merged={book_id}&filled={quote(', '.join(MERGE_FIELDS[f] for f in changes))}")
 
 
 BATCH_LIMIT = 150
@@ -593,10 +683,10 @@ async def isbn_batch(request: Request, isbns: str = Form(""), library: str = For
                     "matched": bool(book), "source": "codigo", "confidence": "high" if book else "low",
                     "note": "" if book else (lookup.failure_note(found) if failed else
                                              "No encontré este ISBN en Open Library ni en Google Books")}
-            dup = conn.execute("SELECT id FROM books WHERE isbn = ? AND library = ?", (code, library)).fetchone()
-            if dup is None and book:
-                dup = db.find_duplicate(conn, item["title"], item["author"], library)
+            dup, can_merge = catalogued_copy(conn, code, book, library)
             item["duplicate_id"] = dup["id"] if dup else None
+            if dup is not None and can_merge and book:
+                item["merge"] = [c for c in merge_plan(dup, item, code, shelf) if c["checked"]]
             items.append(item)
         scan_id = db.save_scan(conn, shelf, items, request.session["user"], library)
     return back(f"/scan/{scan_id}")

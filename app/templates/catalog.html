@@ -3,6 +3,7 @@
 {% block content %}
 {% set added = request.query_params.get('added') %}
 {% set moved = request.query_params.get('moved') %}
+{% set merged = request.query_params.get('merged') %}
 {% set lib_q = lib_param|urlencode %}
 <header class="cat-head">
   <h1>{% if library == 'Niños' %}Los libros de los chicos{% elif library %}Biblioteca{% else %}Las dos bibliotecas{% endif %}</h1>
@@ -13,7 +14,8 @@
   </nav>
 </header>
 
-{% if added %}<p class="notice">Se agregaron {{ added }} libros.</p>{% endif %}
+{% if added and added != '0' %}<p class="notice">Se agregaron {{ added }} libros.</p>{% endif %}
+{% if merged %}<p class="notice">Se completaron los datos de {{ merged }} {{ 'libro que ya estaba' if merged == '1' else 'libros que ya estaban' }} en el catálogo.</p>{% endif %}
 {% if moved %}<p class="notice">Se movieron {{ moved }} libros a {{ library }}.</p>{% endif %}
 {% if covers_running %}<p class="notice">Buscando portadas en Open Library: quedan {{ covers_left }} libros. Recarga para ver el avance.</p>{% endif %}
 

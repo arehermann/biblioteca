@@ -6,7 +6,7 @@
   <h1>Revisa los libros {{ 'escaneados' if from_codes else 'detectados' }}</h1>
   {% if from_codes %}
   <p>Busqué {{ scan["items"]|length }} códigos. Corrige lo que haga falta y desmarca los que no quieras agregar.
-     Los que ya están en el catálogo vienen desmarcados, y a los que no encontré les puedes escribir el título.</p>
+     Los que ya están en el catálogo vienen desmarcados, y si el código trae datos que les faltan, se completan. A los que no encontré les puedes escribir el título.</p>
   {% else %}
   <p>Se encontraron {{ scan["items"]|length }} libros. Corrige lo que haga falta y desmarca los que no quieras agregar.
      Los que ya están en el catálogo vienen desmarcados.</p>
@@ -32,6 +32,10 @@
             {% if item.matched %}{{ item.get('source_name') or 'Open Library' }}: {{ item.ol_title }}{% if item.ol_author %}, {{ item.ol_author }}{% endif %}{% if item.year %} ({{ item.year }}){% endif %}{% else %}Sin coincidencia en Open Library ni Google Books{% endif %}
             {% endif %}
           </span>
+          {% if item.merge %}
+          <label class="merge-opt"><input type="checkbox" name="merge_{{ i }}" value="1" checked>
+            Completar su ficha con {{ item.merge|map(attribute='name')|join(', ') }}</label>
+          {% endif %}
           {% if not item.matched and not item.cover_url %}
           {{ cover_photo("cover-" ~ i, "Foto de la portada", item.photo_error or "", compact=True) }}
           {% if item.photo_error %}<span class="error small">{{ item.photo_error }}</span>{% endif %}
