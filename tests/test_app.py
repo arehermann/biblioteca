@@ -789,3 +789,21 @@ def test_batch_scan_completes_catalogued_books(client, monkeypatch):
         r2 = conn.execute("SELECT * FROM books WHERE id = ?", (other_edition,)).fetchone()
     assert (b["isbn"], b["publisher"], b["year"], b["notes"]) == ("9788499089508", "Debolsillo", 2011, "firmado")
     assert r2["publisher"] == ""
+
+
+def test_barcode_finds_a_book_stored_with_its_isbn_10(client, monkeypatch):
+    login(client)
+    with db.connect() as conn:
+        # From StoryGraph with ISBN-10, plus a copy read from a shelf photo without ISBN.
+        imported = db.add_book(conn, {"title": "The Left Hand of Darkness", "author": "Ursula K. Le Guin",
+                                      "isbn": "0441478123"})
+        db.add_book(conn, {"title": "The Left Hand of Darkness", "author": "Le Guin"})
+
+    async def fake_by_isbn(isbn):
+        return {"title": "The Left Hand of Darkness", "author": "Ursula K. Le Guin", "publisher": "Ace",
+                "edition": "", "year": 1987, "cover_url": "", "isbn": isbn}
+
+    monkeypatch.setattr(lookup, "by_isbn", fake_by_isbn)
+    page = client.post("/isbn", data={"isbn": "9780441478125", "library": "Principal"}).text
+    assert f'action="/books/{imported}/unificar"' in page
+    assert set(re.findall(r'name="use" value="(\w+)" checked', page)) == {"publisher", "year"}

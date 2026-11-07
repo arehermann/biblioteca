@@ -541,6 +541,10 @@ def catalogued_copy(conn, code: str, found: dict | None, library: str):
     Returns (book, can_merge); a title match with another ISBN is another edition, which isn't merged."""
     book = conn.execute("SELECT * FROM books WHERE isbn = ? AND library = ? ORDER BY id LIMIT 1",
                         (code, library)).fetchone()
+    if book is None:
+        # Imports keep ISBNs as written (often ISBN-10, or with dashes): compare them as ISBN-13.
+        book = next((b for b in conn.execute("SELECT * FROM books WHERE isbn != '' AND library = ? ORDER BY id",
+                                             (library,)) if lookup.clean_isbn(b["isbn"]) == code), None)
     if book is not None:
         return book, True
     if not found or not found.get("title"):
