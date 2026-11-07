@@ -181,10 +181,10 @@ class GoogleFailed(LookupFailed):
     """Google Books answered with an error (often its daily quota) rather than "no such book"."""
 
 
-async def _google_items(client: httpx.AsyncClient, q: str) -> list[dict]:
+async def _google_items(client: httpx.AsyncClient, q: str, max_results: int = 1) -> list[dict]:
     """Google Books results for a query. Without GOOGLE_BOOKS_API_KEY every keyless app on the internet shares one
     daily quota, which runs out early in the day, so the key matters. A busy answer (429 or 5xx) is retried."""
-    params = {"q": q, "maxResults": 1, "printType": "books"}
+    params = {"q": q, "maxResults": max_results, "printType": "books"}
     key = os.environ.get("GOOGLE_BOOKS_API_KEY", "").strip()
     if key:
         params["key"] = key
@@ -239,6 +239,12 @@ def failure_note(e: LookupFailed) -> str:
 async def _google_books(client: httpx.AsyncClient, isbn: str) -> dict | None:
     """The edition with this ISBN on Google Books, None when it has none. Raises GoogleFailed on errors."""
     items = await _google_items(client, f"isbn:{isbn}")
+    if not items:
+        # Google's isbn: filter misses many books its plain search finds (often Latin American editions); keep
+        # only a result that really carries this ISBN.
+        items = [i for i in await _google_items(client, isbn, max_results=5) if _google_info(i)["isbn"] == isbn
+                 or isbn in {clean_isbn(x.get("identifier", ""))
+                             for x in i.get("volumeInfo", {}).get("industryIdentifiers", [])}]
     if not items:
         return None
     book = _google_info(items[0])

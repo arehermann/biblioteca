@@ -76,6 +76,12 @@
     </label>
     {% if book.isbn and missing %}<button class="link">Completar con el ISBN</button>{% endif %}
   </form>
+  {% if missing and book.isbn %}
+  <form method="post" action="/books/{{ book.id }}/web" class="row-link scan-row" data-web>
+    {{ icon('search', 20) }}
+    <button class="link grow">Buscar en la web<small data-web-status role="status">Claude busca el ISBN en librerías y agencias de ISBN (unos 3 centavos)</small></button>
+  </form>
+  {% endif %}
   {% if missing %}
   {{ cover_photo("cover-form", "Foto de la portada para completar datos", "Para libros que no aparecen en ningún catálogo") }}
   <form id="cover-form" method="post" action="/books/{{ book.id }}/portada" enctype="multipart/form-data" hidden></form>
@@ -84,6 +90,7 @@
   {% if photo_error %}<p class="error">{{ photo_error }}</p>{% endif %}
   {% if completed is not none %}
     {% if completed %}<p class="notice">Se completaron: {{ completed }}.</p>
+    {% elif web %}<p class="error">Claude encontró el libro en la web, pero sin datos que le falten.</p>
     {% else %}<p class="error">No encontré más datos para ese ISBN en Open Library ni en Google Books.</p>{% endif %}
   {% endif %}
 

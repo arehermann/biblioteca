@@ -36,6 +36,10 @@
           <label class="merge-opt"><input type="checkbox" name="merge_{{ i }}" value="1" checked>
             Completar su ficha con {{ item.merge|map(attribute='name')|join(', ') }}</label>
           {% endif %}
+          {% if not item.matched and item.isbn %}
+          <button class="link-btn" form="web-{{ i }}" data-web-button>Buscar en la web (unos 3 centavos)</button>
+          {% if item.web_error %}<span class="error small">{{ item.web_error }}</span>{% endif %}
+          {% endif %}
           {% if not item.matched and not item.cover_url %}
           {{ cover_photo("cover-" ~ i, "Foto de la portada", item.photo_error or "", compact=True) }}
           {% if item.photo_error %}<span class="error small">{{ item.photo_error }}</span>{% endif %}
@@ -48,6 +52,9 @@
     {% if from_codes %}<a href="/isbn/lote">Descartar y escanear otra vez</a>
     {% else %}<a href="/scan">Descartar y sacar otra foto</a>{% endif %}
   </form>
+  {% for item in scan["items"] %}{% if not item.matched and item.isbn %}
+  <form id="web-{{ loop.index0 }}" method="post" action="/scan/{{ scan.id }}/web/{{ loop.index0 }}" hidden data-web></form>
+  {% endif %}{% endfor %}
   {% for item in scan["items"] %}{% if not item.matched and not item.cover_url %}
   <form id="cover-{{ loop.index0 }}" method="post" action="/scan/{{ scan.id }}/portada/{{ loop.index0 }}" enctype="multipart/form-data" hidden></form>
   {% endif %}{% endfor %}
