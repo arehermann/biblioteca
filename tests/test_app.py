@@ -843,3 +843,127 @@ def test_batch_shows_the_catalogued_book_when_its_isbn_is_unknown(client, monkey
     review = client.get(r.headers["location"]).text
     assert 'value="Montevideo de noche"' in review and "Ya está en Principal" in review
     assert "No encontré este ISBN" not in review
+
+
+# --- Buscar en la web ------------------------------------------------------------
+
+class _Block:
+    def __init__(self, type, text=""):
+        self.type, self.text = type, text
+
+
+class _FakeMessages:
+    def __init__(self, replies):
+        self.replies, self.calls = list(replies), []
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+
+class _Reply:
+    def __init__(self, stop_reason, *blocks):
+        self.stop_reason, self.content = stop_reason, list(blocks)
+
+
+def test_search_web_reads_the_json_after_the_searches():
+    import anthropic
+    import httpx
+    bad = anthropic.BadRequestError("no fetch", response=httpx.Response(400, request=httpx.Request("POST", "https://x")),
+                                    body=None)
+    messages = _FakeMessages([
+        bad,  # web fetch not offered for this model: retried with search alone
+        _Reply("pause_turn", _Block("text", "Busco {el ISBN}"), _Block("server_tool_use")),
+        _Reply("end_turn", _Block("web_search_tool_result"),
+               _Block("text", 'Lo encontré:\n{"title": "Montevideo de noche", "author": "Ana Ruiz", '),
+               _Block("text", '"publisher": "Estuario", "year": "2023", "edition": "", "cover_image_url": ""}')),
+    ])
+    client = type("C", (), {"messages": messages})()
+    found = asyncio.run(vision.search_web("9789915690940", client=client))
+    assert found["title"] == "Montevideo de noche" and found["publisher"] == "Estuario" and found["year"] == "2023"
+    assert messages.calls[0]["model"] == "claude-haiku-5-5" and len(messages.calls[0]["tools"]) == 2
+    assert [t["name"] for t in messages.calls[1]["tools"]] == ["web_search"]
+    assert messages.calls[2]["messages"][-1]["role"] == "assistant"  # the paused turn was sent back
+
+
+def test_web_cover_download_refuses_the_home_network():
+    assert not main._public_https("https://127.0.0.1/portada.jpg")
+    assert not main._public_https("http://example.com/portada.jpg")
+    assert not main._public_https("https://192.168.1.10/portada.jpg")
+    assert asyncio.run(main.download_cover("https://10.0.0.1/x.jpg")) == ""
+
+
+def _fake_web(monkeypatch, result):
+    asked = []
+
+    async def fake_search_web(isbn, title="", author="", client=None):
+        asked.append((isbn, title))
+        if isinstance(result, Exception):
+            raise result
+        return {"title": "", "author": "", "publisher": "", "year": "", "edition": "", "cover_image_url": "",
+                **result}
+
+    monkeypatch.setattr(vision, "search_web", fake_search_web)
+    return asked
+
+
+WEB_HIT = {"title": "Montevideo de noche", "author": "Ana Ruiz", "publisher": "Estuario", "year": "2023"}
+
+
+def test_unknown_isbn_found_on_the_web(client, monkeypatch):
+    login(client)
+
+    async def nothing(isbn):
+        return None
+
+    monkeypatch.setattr(lookup, "by_isbn", nothing)
+    page = client.post("/isbn", data={"isbn": "9789915690940", "library": "Principal"}).text
+    assert 'form="web-form"' in page and "Buscar en la web" in page
+
+    asked = _fake_web(monkeypatch, WEB_HIT)
+    page = client.post("/isbn/web", data={"isbn": "9789915690940", "library": "Principal", "shelf": "Pieza"}).text
+    assert asked == [("9789915690940", "")]
+    assert "Claude encontró estos datos en la web" in page and 'value="Montevideo de noche"' in page
+    assert 'value="Estuario"' in page and 'value="2023"' in page and 'form="web-form"' not in page
+
+    _fake_web(monkeypatch, vision.VisionError("La clave de la API de Claude no es válida. Revisa ANTHROPIC_API_KEY."))
+    page = client.post("/isbn/web", data={"isbn": "9789915690940", "library": "Principal"}).text
+    assert "ANTHROPIC_API_KEY" in page
+
+
+def test_review_item_and_book_found_on_the_web(client, monkeypatch):
+    login(client)
+    with db.connect() as conn:
+        known = db.add_book(conn, {"title": "Montevideo de noche", "author": "", "isbn": "9789915690940",
+                                   "notes": "regalo"})
+
+    async def nothing(isbn):
+        return None
+
+    monkeypatch.setattr(lookup, "by_isbn", nothing)
+    r = client.post("/isbn/lote", data={"isbns": "9788499089508\n9789915690940", "library": "Principal"},
+                    follow_redirects=False)
+    scan = r.headers["location"]
+    review = client.get(scan).text
+    assert f'action="{scan}/web/0"' in review and f'action="{scan}/web/1"' in review
+
+    _fake_web(monkeypatch, {**WEB_HIT, "title": "Ficciones", "author": "Borges"})
+    client.post(f"{scan}/web/0")
+    review = client.get(scan).text
+    assert 'value="Ficciones"' in review and "Encontrado en la web" in review
+
+    _fake_web(monkeypatch, WEB_HIT)
+    client.post(f"{scan}/web/1")
+    review = client.get(scan).text
+    assert "Completar su ficha con autor, editorial, año" in review  # the catalogued copy gets what it lacked
+
+    # From the book's own page, only its empty fields are filled.
+    assert f'action="/books/{known}/web"' in client.get(f"/books/{known}").text
+    r = client.post(f"/books/{known}/web", follow_redirects=False)
+    assert "Se completaron: autor, editorial, año" in client.get(r.headers["location"]).text
+    with db.connect() as conn:
+        b = conn.execute("SELECT * FROM books WHERE id = ?", (known,)).fetchone()
+    assert (b["author"], b["publisher"], b["year"], b["notes"]) == ("Ana Ruiz", "Estuario", 2023, "regalo")

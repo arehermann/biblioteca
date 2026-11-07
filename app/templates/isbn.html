@@ -11,6 +11,7 @@
   {% if dup and not plan %}<p class="notice"><a href="/books/{{ dup.id }}">{{ dup.title }}</a> ya está en {{ library }}{% if found_for_dup.title %} y su ficha ya tiene todo lo que trae el código{% endif %}.</p>{% endif %}
   {% if error %}<p class="error">{{ error }}{% if other_edition %} <a href="/books/{{ other_edition.id }}">Ver {{ other_edition.title }}</a>.{% endif %}</p>{% endif %}
   {% if from_photo %}<p class="notice">Claude leyó estos datos de la foto. Revísalos antes de agregar.</p>{% endif %}
+  {% if from_web %}<p class="notice">Claude encontró estos datos en la web. Revísalos antes de agregar.</p>{% endif %}
 
   {% if dup and plan %}
   <p><a href="/books/{{ dup.id }}">{{ dup.title }}</a> ya está en {{ library }}. El código de barras trae datos que su ficha no tiene; marca los que quieras usar.</p>
@@ -69,6 +70,9 @@
       <label>Año <input name="year" value="{{ found.year or '' }}" inputmode="numeric"></label>
     </div>
     {{ library_picker(library) }}
+    {% if not found.title and not from_web %}
+    <button class="btn" form="web-form" data-web-button>{{ icon('search', 18) }} Buscar en la web <small>(unos 3 centavos)</small></button>
+    {% endif %}
     {% if not found.title or not found.cover_url %}
     {{ cover_photo("cover-form", "Foto de la portada" if found.title else "Sacar foto a la portada",
                    "Claude lee " + ("la portada" if found.title else "el título, el autor y la editorial") + " y la foto queda como portada") }}
@@ -79,6 +83,11 @@
   <form id="cover-form" method="post" action="/isbn/portada" enctype="multipart/form-data" hidden>
     {% for f in ("isbn", "title", "author", "publisher", "edition", "cover_url") %}<input type="hidden" name="{{ f }}" value="{{ found[f] or '' }}">{% endfor %}
     <input type="hidden" name="year" value="{{ found.year or '' }}">
+    <input type="hidden" name="shelf" value="{{ shelf }}">
+    <input type="hidden" name="library" value="{{ library }}">
+  </form>
+  <form id="web-form" method="post" action="/isbn/web" hidden data-web>
+    <input type="hidden" name="isbn" value="{{ found.isbn }}">
     <input type="hidden" name="shelf" value="{{ shelf }}">
     <input type="hidden" name="library" value="{{ library }}">
   </form>

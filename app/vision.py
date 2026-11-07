@@ -144,3 +144,84 @@ async def read_cover(images: list[bytes], client: anthropic.AsyncAnthropic | Non
     front = data.get("front_cover")
     found["front_cover"] = front - 1 if isinstance(front, int) and 1 <= front <= len(images) else -1
     return found
+
+
+# --- Búsqueda en la web --------------------------------------------------------
+# For an ISBN neither Open Library nor Google Books knows, but a bookshop or a national ISBN agency lists. Only run
+# when someone presses "Buscar en la web", since each search is billed: Claude Haiku keeps it to a few cents.
+
+WEB_MODEL = "claude-haiku-5-5"
+WEB_FIELDS = ("title", "author", "publisher", "year", "edition", "cover_image_url")
+
+WEB_PROMPT = """Find the book with ISBN {isbn} on the web.{hint} Bookshops, publishers and national ISBN agencies \
+(for example the ones of Uruguay, Argentina, Chile, Mexico or Spain) usually list it. Check that the page really \
+is for this ISBN.
+
+Then answer with only a JSON object, no other text, with these keys (empty string when you didn't find it; never \
+guess):
+- "title": the title in its original language, with the subtitle after a colon only if it is clearly part of it
+- "author": the author(s), separated by commas
+- "publisher": the publisher or imprint of this edition
+- "year": the year this edition was published
+- "edition": edition statement such as "2a ed.", empty if none
+- "cover_image_url": a direct link to a picture of this edition's front cover (a .jpg, .png or .webp image \
+address you saw on a page about this ISBN), empty if you didn't see one
+
+If no page is about this ISBN, answer with every value empty."""
+
+_TOOLS_SEARCH = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
+_TOOLS_FETCH = [{"type": "web_fetch_20250910", "name": "web_fetch", "max_uses": 2, "max_content_tokens": 8000}]
+
+
+def _json_object(text: str) -> dict | None:
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        data = json.loads(text[start:end + 1])
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+async def search_web(isbn: str, title: str = "", author: str = "",
+                     client: anthropic.AsyncAnthropic | None = None) -> dict:
+    """The book with this ISBN as found on the web, with every field a string (empty when not found)."""
+    client = client or anthropic.AsyncAnthropic()
+    hint = f' It may be "{title}"' + (f" by {author}" if author else "") + "." if title else ""
+    messages = [{"role": "user", "content": WEB_PROMPT.format(isbn=isbn, hint=hint)}]
+    tools = _TOOLS_SEARCH + _TOOLS_FETCH
+    response = None
+    try:
+        for _ in range(4):  # a long search can pause; sending it back lets it carry on
+            try:
+                response = await client.messages.create(model=WEB_MODEL, max_tokens=8000, tools=tools,
+                                                        output_config={"effort": "low"}, messages=messages)
+            except anthropic.BadRequestError:
+                if tools is _TOOLS_SEARCH:
+                    raise
+                tools = _TOOLS_SEARCH  # reading pages isn't available here: searching alone still helps
+                continue
+            if response.stop_reason != "pause_turn":
+                break
+            messages = [*messages, {"role": "assistant", "content": response.content}]
+    except anthropic.AuthenticationError as e:
+        raise VisionError("La clave de la API de Claude no es válida. Revisa ANTHROPIC_API_KEY.") from e
+    except anthropic.RateLimitError as e:
+        raise VisionError("Demasiadas búsquedas seguidas. Espera un minuto y vuelve a intentar.") from e
+    except anthropic.APIStatusError as e:
+        raise VisionError(f"La API de Claude respondió con un error ({e.status_code}).") from e
+    except anthropic.APIConnectionError as e:
+        raise VisionError("No se pudo conectar con la API de Claude. Revisa la conexión a internet.") from e
+
+    if response is None or response.stop_reason == "refusal":
+        raise VisionError("Claude no pudo hacer esta búsqueda. Vuelve a intentar.")
+    # The answer is the text after the last search; earlier text is Claude narrating what it looks for.
+    blocks = list(response.content)
+    last_tool = max((i for i, b in enumerate(blocks) if b.type != "text"), default=-1)
+    data = _json_object("".join(b.text for b in blocks[last_tool + 1:] if b.type == "text"))
+    if data is None:
+        data = _json_object("".join(b.text for b in blocks if b.type == "text"))
+    if data is None:
+        raise VisionError("La respuesta de Claude no se pudo leer. Vuelve a intentar.")
+    return {k: str(data.get(k) or "").strip() for k in WEB_FIELDS}

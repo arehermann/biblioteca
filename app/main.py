@@ -1,6 +1,8 @@
 import csv
 import io
+import ipaddress
 import os
+import socket
 import re
 import uuid
 from contextlib import asynccontextmanager
@@ -14,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
+import httpx
 from PIL import Image, ImageOps
 
 from . import auth, covers, db, lookup, storygraph, vision
@@ -252,7 +255,7 @@ FIELD_NAMES = {"author": "autor", "isbn": "ISBN", "publisher": "editorial", "yea
 
 @app.get("/books/{book_id}", response_class=HTMLResponse)
 def book_page(request: Request, book_id: int, saved: int = 0, completed: str | None = None,
-              photo_error: str = ""):
+              photo_error: str = "", web: int = 0):
     with db.connect() as conn:
         book = conn.execute("SELECT * FROM books WHERE id = ?", (book_id,)).fetchone()
         if book is None:
@@ -260,7 +263,7 @@ def book_page(request: Request, book_id: int, saved: int = 0, completed: str | N
         loans = conn.execute("SELECT * FROM loans WHERE book_id = ? ORDER BY id DESC", (book_id,)).fetchall()
         return render(request, "book.html", book=book, shelves=shelves(conn), saved=saved, library=book["library"],
                       loan=db.active_loan(conn, book_id), loans=loans, borrowers=db.borrowers(conn),
-                      today=date.today().isoformat(), completed=completed, photo_error=photo_error,
+                      today=date.today().isoformat(), completed=completed, photo_error=photo_error, web=web,
                       missing=[name for f, name in FIELD_NAMES.items() if not book[f]])
 
 
@@ -756,6 +759,111 @@ async def read_cover_photos(form) -> tuple[dict | None, str | None]:
         except Exception:
             pass  # the details are still worth keeping without the picture
     return book, None
+
+
+# --- Buscar en la web -----------------------------------------------------------
+# For ISBNs no catalog knows: Claude (Haiku, a few cents each) searches bookshops and ISBN agencies. Only on demand.
+
+WEB_COVER_MAX = 5_000_000
+
+
+def _public_https(url: str) -> bool:
+    """Only plain internet addresses: the Pi must not be sent to fetch something on the home network."""
+    try:
+        parts = httpx.URL(url)
+        if parts.scheme != "https" or not parts.host:
+            return False
+        addresses = {info[4][0] for info in socket.getaddrinfo(parts.host, 443)}
+    except Exception:
+        return False
+    return bool(addresses) and all(ipaddress.ip_address(a.split("%")[0]).is_global for a in addresses)
+
+
+async def download_cover(url: str) -> str:
+    """The cover at url saved as our own photo cover, or "" when it isn't a usable picture."""
+    if not url or not _public_https(url):
+        return ""
+    try:
+        async with httpx.AsyncClient(headers=lookup.HEADERS, follow_redirects=False) as client:
+            r = await client.get(url, timeout=15)
+        if r.status_code != 200 or not r.headers.get("content-type", "").startswith("image/") \
+                or not 2_000 < len(r.content) < WEB_COVER_MAX:
+            return ""
+        return save_cover_photo(r.content)
+    except Exception:
+        return ""
+
+
+async def search_web(isbn: str, title: str = "", author: str = "") -> tuple[dict | None, str | None]:
+    """The book with this ISBN as found on the web by Claude, or (None, what to tell the person)."""
+    try:
+        found = await vision.search_web(isbn, title, author)
+    except vision.VisionError as e:
+        return None, str(e)
+    except Exception:
+        return None, "La búsqueda en la web falló. Vuelve a intentar en un rato."
+    if not found["title"]:
+        return None, "Claude no encontró este ISBN en la web. Saca una foto a la portada o escribe los datos a mano."
+    book = {"title": found["title"], "author": found["author"], "publisher": found["publisher"],
+            "edition": found["edition"], "year": lookup._year(found["year"]), "isbn": isbn,
+            "cover_url": await download_cover(found["cover_image_url"])}
+    return book, None
+
+
+@app.post("/isbn/web", response_class=HTMLResponse)
+async def isbn_web(request: Request, isbn: str = Form(""), library: str = Form(""), shelf: str = Form("")):
+    """The /isbn page's unknown book, looked up on the web."""
+    remember_library(request, library)
+    code = lookup.clean_isbn(isbn)
+    if not code:
+        return back("/isbn")
+    found, error = await search_web(code)
+    empty = {"title": "", "author": "", "publisher": "", "edition": "", "year": None, "cover_url": "", "isbn": code}
+    return isbn_form(request, found=found or empty, shelf=shelf.strip(), error=error, from_web=bool(found))
+
+
+@app.post("/scan/{scan_id}/web/{index}")
+async def scan_item_web(scan_id: int, index: int):
+    """One book on the review page, looked up on the web."""
+    with db.connect() as conn:
+        data = db.load_scan(conn, scan_id)
+    if data is None:
+        return back("/scan")
+    if not 0 <= index < len(data["items"]) or not data["items"][index].get("isbn"):
+        return back(f"/scan/{scan_id}")
+    item = data["items"][index]
+    found, error = await search_web(item["isbn"], item.get("title", ""), item.get("author", ""))
+    if found:
+        fill_empty(item, found, ("title", "author", "publisher", "edition", "year", "cover_url"))
+        item.update(matched=True, confidence="high", note="Encontrado en la web", photo_error="", web_error="")
+    else:
+        item["web_error"] = error
+    with db.connect() as conn:
+        dup = conn.execute("SELECT * FROM books WHERE id = ?", (item.get("duplicate_id"),)).fetchone()
+        if found and dup is not None and (not dup["isbn"] or lookup.clean_isbn(dup["isbn"]) == item["isbn"]):
+            item["merge"] = [c for c in merge_plan(dup, item, item["isbn"], data["shelf"]) if c["checked"]]
+        db.update_scan_items(conn, scan_id, data["items"])
+    return back(f"/scan/{scan_id}#libro-{index}")
+
+
+@app.post("/books/{book_id}/web")
+async def book_web(book_id: int):
+    """Fills a catalogued book's empty fields from the web, by its ISBN."""
+    with db.connect() as conn:
+        book = conn.execute("SELECT * FROM books WHERE id = ?", (book_id,)).fetchone()
+    if book is None:
+        return back("/")
+    code = lookup.clean_isbn(book["isbn"])
+    if not code:
+        return back(f"/books/{book_id}")
+    found, error = await search_web(code, book["title"], book["author"])
+    if not found:
+        return back(f"/books/{book_id}?photo_error={quote(error)}")
+    changes = {f: found[f] for f in ("author", "publisher", "edition", "year", "cover_url")
+               if found[f] and not book[f] and not (f == "cover_url" and book["cover_manual"])}
+    with db.connect() as conn:
+        apply_merge(conn, book_id, changes)
+    return back(f"/books/{book_id}?completed={quote(', '.join(MERGE_FIELDS[f] for f in changes))}&web=1")
 
 
 def fill_empty(target: dict, found: dict, fields) -> list[str]:

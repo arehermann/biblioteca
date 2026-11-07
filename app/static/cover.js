@@ -21,3 +21,18 @@ document.querySelectorAll('[data-cover]').forEach(box => {
   });
   legal.addEventListener('change', () => { if (legal.files.length) form.requestSubmit(); });
 });
+
+// "Buscar en la web": Claude takes a while, so say so and don't send the search (and pay for it) twice.
+document.querySelectorAll('form[data-web]').forEach(form => {
+  form.addEventListener('submit', event => {
+    if (form.dataset.sending) { event.preventDefault(); return; }
+    form.dataset.sending = '1';
+    const buttons = [...form.querySelectorAll('button'), ...document.querySelectorAll(`button[form="${form.id}"]`)];
+    buttons.forEach(b => {
+      const status = b.querySelector('[data-web-status]');
+      if (status) status.textContent = 'Claude está buscando en la web… (puede tardar un minuto)';
+      else b.textContent = 'Buscando en la web…';
+      b.disabled = true;
+    });
+  });
+});
