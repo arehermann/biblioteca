@@ -807,3 +807,39 @@ def test_barcode_finds_a_book_stored_with_its_isbn_10(client, monkeypatch):
     page = client.post("/isbn", data={"isbn": "9780441478125", "library": "Principal"}).text
     assert f'action="/books/{imported}/unificar"' in page
     assert set(re.findall(r'name="use" value="(\w+)" checked', page)) == {"publisher", "year"}
+
+
+def test_google_plain_search_finds_isbns_its_isbn_filter_misses(monkeypatch):
+    import httpx
+    monkeypatch.setenv("GOOGLE_BOOKS_API_KEY", "clave123")
+    hit = {"items": [
+        {"volumeInfo": {"title": "Otro libro", "industryIdentifiers": [{"type": "ISBN_13", "identifier": "9788466664714"}]}},
+        {"volumeInfo": {"title": "Montevideo de noche", "authors": ["Ana Ruiz"], "publisher": "Estuario",
+                        "publishedDate": "2023", "imageLinks": {"thumbnail": "http://books.google.com/m.jpg"},
+                        "industryIdentifiers": [{"type": "ISBN_13", "identifier": "9789915690940"}]}}]}
+
+    def handler(request):
+        if request.url.path == "/books/v1/volumes":
+            q = request.url.params["q"]
+            return httpx.Response(200, json={} if q.startswith("isbn:") else hit)
+        return httpx.Response(404) if "/isbn/" in request.url.path else httpx.Response(200, json={"docs": []})
+
+    _mock_http(monkeypatch, handler)
+    book = asyncio.run(lookup.by_isbn("9789915690940"))
+    assert (book["title"], book["publisher"], book["cover_url"]) == \
+        ("Montevideo de noche", "Estuario", "https://books.google.com/m.jpg")
+
+
+def test_batch_shows_the_catalogued_book_when_its_isbn_is_unknown(client, monkeypatch):
+    login(client)
+    with db.connect() as conn:
+        db.add_book(conn, {"title": "Montevideo de noche", "author": "Ana Ruiz", "isbn": "9789915690940"})
+
+    async def fake_by_isbn(isbn):
+        return None
+
+    monkeypatch.setattr(lookup, "by_isbn", fake_by_isbn)
+    r = client.post("/isbn/lote", data={"isbns": "9789915690940", "library": "Principal"}, follow_redirects=False)
+    review = client.get(r.headers["location"]).text
+    assert 'value="Montevideo de noche"' in review and "Ya está en Principal" in review
+    assert "No encontré este ISBN" not in review

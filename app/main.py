@@ -689,6 +689,10 @@ async def isbn_batch(request: Request, isbns: str = Form(""), library: str = For
                                              "No encontré este ISBN en Open Library ni en Google Books")}
             dup, can_merge = catalogued_copy(conn, code, book, library)
             item["duplicate_id"] = dup["id"] if dup else None
+            if dup is not None and not book:
+                # Nobody knew the ISBN, but the catalogue does: show which book it is instead of empty boxes.
+                item.update(title=dup["title"], author=dup["author"], publisher=dup["publisher"],
+                            cover_url=dup["cover_url"], note="")
             if dup is not None and can_merge and book:
                 item["merge"] = [c for c in merge_plan(dup, item, code, shelf) if c["checked"]]
             items.append(item)
@@ -825,6 +829,10 @@ async def scan_item_cover_photo(request: Request, scan_id: int, index: int):
     else:
         item["photo_error"] = error
     with db.connect() as conn:
+        dup = conn.execute("SELECT * FROM books WHERE id = ?", (item.get("duplicate_id"),)).fetchone()
+        if found and dup is not None and (not dup["isbn"] or lookup.clean_isbn(dup["isbn"]) == item.get("isbn")):
+            # Already catalogued: what the photo read can complete that book.
+            item["merge"] = [c for c in merge_plan(dup, item, item.get("isbn", ""), data["shelf"]) if c["checked"]]
         db.update_scan_items(conn, scan_id, data["items"])
     return back(f"/scan/{scan_id}#libro-{index}")
 
