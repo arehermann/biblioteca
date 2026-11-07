@@ -7,11 +7,33 @@
   <h1>Código de barras</h1>
   {% include "_scan_tabs.html" %}
   {% if added %}<p class="notice">Se agregó <a href="/books/{{ added.id }}">{{ added.title }}</a>. Escanea el siguiente.</p>{% endif %}
-  {% if dup %}<p class="notice"><a href="/books/{{ dup.id }}">{{ dup.title }}</a> ya está en {{ library }}.</p>{% endif %}
-  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  {% if merged %}<p class="notice">{% if filled %}Se completó <a href="/books/{{ merged.id }}">{{ merged.title }}</a>: {{ filled }}.{% else %}<a href="/books/{{ merged.id }}">{{ merged.title }}</a> quedó como estaba.{% endif %} Escanea el siguiente.</p>{% endif %}
+  {% if dup and not plan %}<p class="notice"><a href="/books/{{ dup.id }}">{{ dup.title }}</a> ya está en {{ library }}{% if found_for_dup.title %} y su ficha ya tiene todo lo que trae el código{% endif %}.</p>{% endif %}
+  {% if error %}<p class="error">{{ error }}{% if other_edition %} <a href="/books/{{ other_edition.id }}">Ver {{ other_edition.title }}</a>.{% endif %}</p>{% endif %}
   {% if from_photo %}<p class="notice">Claude leyó estos datos de la foto. Revísalos antes de agregar.</p>{% endif %}
 
-  {% if not found %}
+  {% if dup and plan %}
+  <p><a href="/books/{{ dup.id }}">{{ dup.title }}</a> ya está en {{ library }}. El código de barras trae datos que su ficha no tiene; marca los que quieras usar.</p>
+  <form method="post" action="/books/{{ dup.id }}/unificar" class="stack">
+    <ul class="merge-plan">
+      {% for c in plan %}
+      <li><label>
+        <input type="checkbox" name="use" value="{{ c.field }}"{% if c.checked %} checked{% endif %}>
+        <input type="hidden" name="new_{{ c.field }}" value="{{ c.new }}">
+        <span class="grow"><strong>{{ c.name[0]|upper ~ c.name[1:] }}</strong>
+        {% if c.field == 'cover_url' %}
+          <span class="covers">{% if c.old %}<img src="{{ c.old }}" alt="Portada actual"> → {% endif %}<img src="{{ c.new }}" alt="Portada nueva"></span>
+        {% else %}
+          <span>{% if c.old %}<s class="muted">{{ c.old }}</s> → {% endif %}{{ c.new }}</span>
+        {% endif %}</span>
+      </label></li>
+      {% endfor %}
+    </ul>
+    <p class="muted small">Las notas, la biblioteca y los préstamos no se tocan.</p>
+    <button class="btn primary">Completar y escanear otro</button>
+    <a href="/isbn" class="center">Dejarlo como está</a>
+  </form>
+  {% elif not found %}
   <form method="post" action="/isbn" class="stack" id="isbn-form">
     {{ library_picker(library) }}
     <label class="btn primary big-pick"><input type="file" accept="image/*" capture="environment" hidden data-barcode>{{ icon('camera', 20) }} Sacar foto al código</label>

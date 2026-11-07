@@ -447,8 +447,13 @@ def test_add_book_from_barcode(client, monkeypatch):
     after = client.get(r.headers["location"]).text
     assert "Se agregó" in after and 'value="Pieza"' in after  # the shelf carries over to the next book
 
-    # Scanning it again in the same library says it is already there.
-    assert "ya está en Niños" in client.post("/isbn", data={"isbn": "9780802130303", "library": "Niños"}).text
+    # Scanning it again in the same library says it is already there, and offers what its record lacks.
+    again = client.post("/isbn", data={"isbn": "9780802130303", "library": "Niños"}).text
+    assert "ya está en Niños" in again and 'name="new_publisher" value="Emecé"' in again
+    with db.connect() as conn:
+        conn.execute("UPDATE books SET publisher = 'Emecé', year = 1956")
+    again = client.post("/isbn", data={"isbn": "9780802130303", "library": "Niños"}).text
+    assert "ya tiene todo lo que trae el código" in again
 
 
 def test_scan_many_barcodes_then_review_together(client, monkeypatch):
@@ -483,10 +488,12 @@ def test_scan_many_barcodes_then_review_together(client, monkeypatch):
     review = client.get(r.headers["location"]).text
     assert "Revisa los libros escaneados" in review and 'value="Pieza"' in review
     assert "Ya está en Niños" in review  # Rayuela, by its ISBN
+    assert "Completar su ficha con editorial, año" in review  # the author written another way isn't offered
     assert "No encontré este ISBN" in review and "Open Library no respondió" in review
     assert "localStorage.removeItem('isbn-lote')" in review and 'href="/isbn/lote"' in review
-    # Only Ficciones starts checked (plus the library radio): one is already there, two have no title yet.
-    assert review.count("checked") == 2
+    # Only Ficciones starts checked (plus the library radio and completing Rayuela): one is already there, two
+    # have no title yet.
+    assert review.count("checked") == 3
 
     # A title typed for an unknown ISBN adds it; a checked row left without a title is skipped.
     r = client.post(r.headers["location"], data={"library": "Niños", "shelf": "Pieza", "add_0": "1", "add_2": "1",
@@ -498,6 +505,10 @@ def test_scan_many_barcodes_then_review_together(client, monkeypatch):
     assert set(rows) == {"Ficciones", "Diario de un gato"}
     assert rows["Ficciones"]["isbn"] == "9780802130303" and rows["Ficciones"]["library"] == "Niños"
     assert rows["Ficciones"]["source"] == "codigo" and rows["Diario de un gato"]["isbn"] == "9788499089508"
+    with db.connect() as conn:
+        rayuela = conn.execute("SELECT * FROM books WHERE title = 'Rayuela'").fetchone()
+    # Its "complete" box was unticked here, so Rayuela stays as it was.
+    assert rayuela["publisher"] == ""
 
 
 def test_static_files_are_versioned_so_phones_reload_them(client):
@@ -704,3 +715,77 @@ def test_review_item_completed_from_cover_photo(client, monkeypatch):
         item = db.load_scan(conn, scan_id)["items"][0]
     assert (item["title"], item["author"], item["isbn"], item["confidence"]) == \
         ("Los niños del agua", "Ana Pérez", "9788466664714", "high")
+
+
+def test_scanning_a_catalogued_book_completes_it(client, monkeypatch):
+    login(client)
+    with db.connect() as conn:
+        # Imported from StoryGraph without ISBN; the barcode finds it by title and author.
+        poor = db.add_book(conn, {"title": "Ficciones", "author": "Borges", "publisher": "Adivinada",
+                                  "notes": "de la abuela", "cover_url": "https://covers/vieja.jpg"})
+        other = db.add_book(conn, {"title": "Rayuela", "author": "Cortázar", "isbn": "9788437604572",
+                                   "shelf": "Living"})
+
+    async def fake_by_isbn(isbn):
+        if isbn == "9788499089508":
+            return {"title": "Ficciones", "author": "Jorge Luis Borges", "publisher": "Debolsillo",
+                    "edition": "3ª ed.", "year": 2011, "cover_url": "https://covers/x.jpg", "isbn": isbn}
+        return {"title": "Rayuela", "author": "Julio Cortázar", "publisher": "Alfaguara", "edition": "",
+                "year": 2019, "cover_url": "https://covers/r.jpg", "isbn": isbn}
+
+    monkeypatch.setattr(lookup, "by_isbn", fake_by_isbn)
+    page = client.post("/isbn", data={"isbn": "9788499089508", "library": "Principal", "shelf": "Pieza"}).text
+    assert f'action="/books/{poor}/unificar"' in page and "Agregar y escanear otro" not in page
+    ticked = set(re.findall(r'name="use" value="(\w+)" checked', page))
+    # No ISBN before: the copy in hand sets the edition. The author written in full is offered, not ticked.
+    assert ticked == {"isbn", "publisher", "edition", "year", "cover_url", "shelf"}
+    assert 'name="use" value="author"' in page
+
+    form = {"use": sorted(ticked)}
+    form.update({f"new_{f}": v for f, v in re.findall(r'name="new_(\w+)" value="([^"]*)"', page)})
+    r = client.post(f"/books/{poor}/unificar", data=form, follow_redirects=False)
+    assert r.headers["location"].startswith(f"/isbn?merged={poor}")
+    assert "Se completó" in client.get(r.headers["location"]).text
+    with db.connect() as conn:
+        b = conn.execute("SELECT * FROM books WHERE id = ?", (poor,)).fetchone()
+        assert conn.execute("SELECT COUNT(*) FROM books").fetchone()[0] == 2
+    assert (b["author"], b["isbn"], b["publisher"], b["edition"], b["year"], b["cover_url"], b["shelf"],
+            b["notes"]) == ("Borges", "9788499089508", "Debolsillo", "3ª ed.", 2011, "https://covers/x.jpg",
+                            "Pieza", "de la abuela")
+
+    # Found by ISBN: only empty fields are ticked, and its shelf is never moved.
+    page = client.post("/isbn", data={"isbn": "9788437604572", "library": "Principal", "shelf": "Pieza"}).text
+    assert set(re.findall(r'name="use" value="(\w+)" checked', page)) == {"publisher", "year", "cover_url"}
+    assert 'value="shelf"' not in page
+
+
+def test_batch_scan_completes_catalogued_books(client, monkeypatch):
+    login(client)
+    with db.connect() as conn:
+        poor = db.add_book(conn, {"title": "Ficciones", "author": "Borges", "notes": "firmado"})
+        other_edition = db.add_book(conn, {"title": "Rayuela", "author": "Cortázar", "isbn": "9788437604572"})
+
+    async def fake_by_isbn(isbn):
+        if isbn == "9788499089508":
+            return {"title": "Ficciones", "author": "Borges", "publisher": "Debolsillo", "edition": "",
+                    "year": 2011, "cover_url": "https://covers/x.jpg", "isbn": isbn}
+        return {"title": "Rayuela", "author": "Cortázar", "publisher": "Cátedra", "edition": "", "year": 1984,
+                "cover_url": "", "isbn": isbn}
+
+    monkeypatch.setattr(lookup, "by_isbn", fake_by_isbn)
+    r = client.post("/isbn/lote", data={"isbns": "9788499089508\n9789500404402", "library": "Principal"},
+                    follow_redirects=False)
+    review = client.get(r.headers["location"]).text
+    assert "Completar su ficha con ISBN, editorial, año, portada" in review
+    assert 'name="merge_1"' not in review  # another edition of Rayuela: not merged, shown as already there
+    assert review.count("Ya está en Principal") == 2
+
+    r = client.post(r.headers["location"], data={"library": "Principal", "merge_0": "1"}, follow_redirects=False)
+    assert "merged=1" in r.headers["location"] and "added=0" in r.headers["location"]
+    page = client.get(r.headers["location"]).text
+    assert "Se completaron los datos de 1 libro" in page and "Se agregaron" not in page
+    with db.connect() as conn:
+        b = conn.execute("SELECT * FROM books WHERE id = ?", (poor,)).fetchone()
+        r2 = conn.execute("SELECT * FROM books WHERE id = ?", (other_edition,)).fetchone()
+    assert (b["isbn"], b["publisher"], b["year"], b["notes"]) == ("9788499089508", "Debolsillo", 2011, "firmado")
+    assert r2["publisher"] == ""
