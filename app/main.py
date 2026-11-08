@@ -838,7 +838,11 @@ async def download_covers(image_urls, page_urls, isbn: str = "", limit: int = WE
         if len(saved) >= limit or url in seen:
             return
         seen.add(url)
-        path = await _picture(client, url)
+        try:
+            path = await _picture(client, url)
+        except Exception as e:  # one broken site must not cost the other candidates
+            log.warning("Cubierta web: %s falló (%s: %s)", url, type(e).__name__, e)
+            return
         if not path:
             return
         digest = hashlib.sha1(_our_photo(path).read_bytes()).hexdigest()
@@ -855,7 +859,11 @@ async def download_covers(image_urls, page_urls, isbn: str = "", limit: int = WE
             for page_url in page_urls:
                 if len(saved) >= limit:
                     break
-                page = await _safe_get(client, page_url, 3_000_000)
+                try:
+                    page = await _safe_get(client, page_url, 3_000_000)
+                except Exception as e:
+                    log.warning("Cubierta web: la página %s falló (%s: %s)", page_url, type(e).__name__, e)
+                    continue
                 if page is None or page.status_code != 200:
                     log.warning("Cubierta web: la página %s no respondió (%s)", page_url,
                                 page.status_code if page is not None else "-")
@@ -950,6 +958,11 @@ async def book_web(book_id: int):
         return back(f"/books/{book_id}")
     found, error = await search_web(code, book["title"], book["author"], want_covers=True)
     if not found:
+        # Claude found nothing, but Open Library or Google Books may still have the cover for this ISBN.
+        covers = await download_covers([], [], code)
+        if covers:
+            return back(f"/books/{book_id}?completed=&web=1" + "".join(f"&web_cover={quote(c)}" for c in covers)
+                        + "#elegir-cubierta")
         return back(f"/books/{book_id}?photo_error={quote(error)}")
     changes = {f: found[f] for f in ("author", "publisher", "edition", "year") if found[f] and not book[f]}
     covers = found["covers"]

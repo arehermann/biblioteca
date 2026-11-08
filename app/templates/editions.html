@@ -14,7 +14,7 @@
       <form method="post" action="/books/{{ book.id }}/ediciones">
         {% for k in ('cover_url', 'isbn', 'publisher', 'edition', 'year') %}<input type="hidden" name="{{ k }}" value="{{ e[k] or '' }}">{% endfor %}
         <button class="book edition-pick{% if e.isbn and e.isbn == book.isbn %} current{% endif %}">
-          {% if e.cover_url %}<img src="{{ e.cover_url }}" alt="" loading="lazy">{% else %}<div class="nocover">Sin cubierta</div>{% endif %}
+          {% if e.cover_url %}<img src="{{ e.cover_url }}" alt="" loading="lazy" onerror="this.closest('form').elements.cover_url.value = ''; this.outerHTML = '<div class=&quot;nocover&quot;>Sin cubierta</div>'">{% else %}<div class="nocover">Sin cubierta</div>{% endif %}
           <strong>{{ e.publisher or 'Editorial desconocida' }}</strong>
           <span class="muted">{{ e.year or '' }}{% if e.edition %} · {{ e.edition }}{% endif %}</span>
           {% if e.isbn %}<span class="muted small">ISBN {{ e.isbn }}</span>{% endif %}
