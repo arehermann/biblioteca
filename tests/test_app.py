@@ -903,7 +903,7 @@ def _fake_web(monkeypatch, result):
         asked.append((isbn, title))
         if isinstance(result, Exception):
             raise result
-        return {"title": "", "author": "", "publisher": "", "year": "", "edition": "", "cover_image_url": "",
+        return {"title": "", "author": "", "publisher": "", "year": "", "edition": "", "cover_image_url": "", "page_url": "",
                 **result}
 
     monkeypatch.setattr(vision, "search_web", fake_search_web)
@@ -980,7 +980,7 @@ def test_book_page_offers_the_cover_found_on_the_web(client, monkeypatch):
 
     saved = []
 
-    async def fake_download(url):
+    async def fake_download(url, *args):
         buf = io.BytesIO()
         Image.new("RGB", (200, 300), "red").save(buf, format="JPEG")
         saved.append(main.save_cover_photo(buf.getvalue()))
@@ -1007,3 +1007,45 @@ def test_book_page_offers_the_cover_found_on_the_web(client, monkeypatch):
     client.post(f"/books/{book_id}/cubierta", data={"cover_url": "https://evil/x.jpg", "use": "1"})
     with db.connect() as conn:
         assert conn.execute("SELECT cover_url FROM books WHERE id = ?", (book_id,)).fetchone()[0] == saved[1]
+
+
+def test_web_cover_comes_from_the_book_page_when_the_picture_fails(client, monkeypatch):
+    import httpx
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (200, 300), "blue").save(buf, format="JPEG", quality=95)
+    jpeg = buf.getvalue() + b"\0" * 3000
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        if request.url.path == "/inventada.jpg":
+            return httpx.Response(404)
+        if request.url.path == "/libro/garcia":
+            return httpx.Response(200, html='<html><head><meta property="og:image" content="/img/tapa"></head></html>')
+        if request.url.path == "/img/tapa":
+            return httpx.Response(302, headers={"location": "https://cdn.libreria.test/tapa.jpg"})
+        if request.url.host == "cdn.libreria.test":
+            return httpx.Response(200, content=jpeg, headers={"content-type": "image/jpeg"})
+        return httpx.Response(404)
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    monkeypatch.setattr(main, "_public_https", lambda url: url.startswith("https://") and "interno" not in url)
+    saved = asyncio.run(main.download_cover("https://libreria.test/inventada.jpg", "https://libreria.test/libro/garcia",
+                                            "9788490666890"))
+    assert saved.startswith(db.PHOTO_COVER_PREFIX) and main._our_photo(saved).exists()
+    assert seen[-1] == "https://cdn.libreria.test/tapa.jpg"
+
+    # A redirect to the home network is not followed; Open Library by ISBN is the last try.
+    def handler2(request):
+        seen.append(str(request.url))
+        if request.url.host == "libreria.test":
+            return httpx.Response(302, headers={"location": "https://interno.local/x.jpg"})
+        return httpx.Response(404)
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler2), **kw))
+    seen.clear()
+    assert asyncio.run(main.download_cover("https://libreria.test/x.jpg", "", "9788490666890")) == ""
+    assert "https://interno.local/x.jpg" not in seen
+    assert seen[-1].startswith("https://covers.openlibrary.org/b/isbn/9788490666890-L.jpg")

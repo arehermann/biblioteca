@@ -151,7 +151,7 @@ async def read_cover(images: list[bytes], client: anthropic.AsyncAnthropic | Non
 # when someone presses "Buscar en la web", since each search is billed: Claude Haiku keeps it to a few cents.
 
 WEB_MODEL = "claude-haiku-5-5"
-WEB_FIELDS = ("title", "author", "publisher", "year", "edition", "cover_image_url")
+WEB_FIELDS = ("title", "author", "publisher", "year", "edition", "cover_image_url", "page_url")
 
 WEB_PROMPT = """Find the book with ISBN {isbn} on the web.{hint} Bookshops, publishers and national ISBN agencies \
 (for example the ones of Uruguay, Argentina, Chile, Mexico or Spain) usually list it. Check that the page really \
@@ -166,6 +166,8 @@ guess):
 - "edition": edition statement such as "2a ed.", empty if none
 - "cover_image_url": a direct link to a picture of this edition's front cover (a .jpg, .png or .webp image \
 address you saw on a page about this ISBN), empty if you didn't see one
+- "page_url": the address of the best page you found about this exact ISBN (a bookshop or publisher page \
+showing this edition), empty if none
 
 If no page is about this ISBN, answer with every value empty."""
 
