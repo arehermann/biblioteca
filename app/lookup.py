@@ -139,19 +139,26 @@ async def lookup_many(items: list[dict], concurrency: int = 4, strict: bool = Fa
 async def editions(title: str, author: str = "", isbn: str = "", limit: int = 60) -> list[dict]:
     """Editions of the book's work, those with a cover first, so a person can pick the one they own."""
     async with httpx.AsyncClient(headers=HEADERS) as client:
-        work_key = ""
+        work_key, own = "", None
         if isbn:
-            ed = await edition_by_isbn(client, isbn)
-            work_key = ed["work_key"] if ed else ""
+            own = await edition_by_isbn(client, isbn)
+            work_key = own["work_key"] if own else ""
+            if own and not own["cover_url"]:
+                # Open Library often has the picture by ISBN even when the edition record lists no cover id.
+                own["cover_url"] = f"https://covers.openlibrary.org/b/isbn/{isbn}-M.jpg?default=false"
         if not work_key and title:
             docs = await _search(client, title=title, author=author) if author else []
             docs = docs or await _search(client, title=title)
             work_key = docs[0].get("key", "") if docs else ""
         if not work_key:
-            return []
+            return [own] if own else []
         data = await _get_json(client, f"{work_key}/editions.json", limit=limit) or {}
     found = [_edition_meta(e) for e in data.get("entries", [])]
-    return sorted(found, key=lambda e: (not e["cover_url"], -(e["year"] or 0)))
+    found = sorted(found, key=lambda e: (not e["cover_url"], -(e["year"] or 0)))
+    if own:
+        # The edition with the book's own ISBN goes first: a popular work has hundreds, and it may not be among them.
+        found = [own] + [e for e in found if e["edition_key"] != own["edition_key"]]
+    return found
 
 
 # --- Barcodes ----------------------------------------------------------------

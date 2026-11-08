@@ -213,7 +213,7 @@ def _run_lookup(handler, *args):
 
 
 EDITION = {"title": "Ficciones", "publishers": ["Emecé"], "publish_date": "1956", "edition_name": "2a ed.",
-           "covers": [555], "isbn_10": ["9500404400"], "works": [{"key": "/works/OL1W"}], "key": "/books/OL9M"}
+           "covers": [555], "isbn_10": ["9500404400"], "works": [{"key": "/works/OL1W"}], "key": "/books/OLownM"}
 WORK_DOC = {"key": "/works/OL1W", "title": "Ficciones", "author_name": ["Borges"], "cover_i": 7,
             "isbn": ["0802130305", "9780802130303"], "publisher": ["Grove"]}
 
@@ -261,7 +261,9 @@ def test_editions_list_puts_covers_first(monkeypatch):
     monkeypatch.setattr(lookup.httpx, "AsyncClient",
                         lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
     found = asyncio.run(lookup.editions("Ficciones", "Borges", "9500404400"))
-    assert [e["edition_key"] for e in found] == ["/books/B", "/books/A"]
+    # The edition with the book's own ISBN first, then those with a cover.
+    assert [e["edition_key"] for e in found][1:] == ["/books/B", "/books/A"]
+    assert found[0]["edition_key"] == EDITION.get("key", "")
 
 
 def test_choose_edition_and_manual_cover_are_kept(client, monkeypatch):
@@ -1055,3 +1057,49 @@ def test_web_cover_comes_from_the_book_page_when_the_picture_fails(client, monke
     assert asyncio.run(main.download_cover("https://libreria.test/x.jpg", "", "9788490666890")) == ""
     assert "https://interno.local/x.jpg" not in seen
     assert any(u.startswith("https://covers.openlibrary.org/b/isbn/9788490666890-L.jpg") for u in seen)
+
+
+def test_one_broken_cover_site_does_not_stop_the_others(monkeypatch, tmp_path):
+    import httpx
+    from PIL import Image
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
+    buf = io.BytesIO()
+    Image.new("RGB", (200, 300), "blue").save(buf, format="JPEG", quality=95)
+    jpeg = buf.getvalue() + b"\0" * 3000
+
+    def handler(request):
+        if request.url.host == "lenta.test":
+            raise httpx.ReadTimeout("timed out", request=request)
+        if request.url.host == "covers.openlibrary.org":
+            return httpx.Response(302, headers={"location": "https://archive.org/download/x/tapa.jpg"})
+        if request.url.host == "archive.org":
+            return httpx.Response(200, content=jpeg, headers={"content-type": "image/jpeg"})
+        return httpx.Response(404)
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    monkeypatch.setattr(main, "_public_https", lambda url: url.startswith("https://"))
+    covers = asyncio.run(main.download_covers(["https://lenta.test/a.jpg"], ["https://lenta.test/libro"],
+                                              "9781101905555"))
+    assert len(covers) == 1 and main._our_photo(covers[0]).exists()
+
+
+def test_editions_put_the_books_own_isbn_first(monkeypatch):
+    import httpx
+    own = {"title": "Libro", "isbn_13": ["9781101905555"], "publishers": ["Crown"], "publish_date": "2016",
+           "works": [{"key": "/works/OL1W"}], "key": "/books/OLownM"}
+    others = {"entries": [{"title": "Libro", "isbn_13": [f"97811019055{i:02d}"], "covers": [i + 1],
+                           "publish_date": "2020", "works": [{"key": "/works/OL1W"}], "key": f"/books/OL{i}M"} for i in range(60)]}
+
+    def handler(request):
+        if request.url.path == "/isbn/9781101905555.json":
+            return httpx.Response(200, json=own)
+        if request.url.path == "/works/OL1W/editions.json":
+            return httpx.Response(200, json=others)
+        return httpx.Response(404)
+
+    _mock_http(monkeypatch, handler)
+    found = asyncio.run(lookup.editions("Libro", "", "9781101905555"))
+    assert found[0]["isbn"] == "9781101905555" and found[0]["publisher"] == "Crown"
+    assert found[0]["cover_url"] == "https://covers.openlibrary.org/b/isbn/9781101905555-M.jpg?default=false"
+    assert len(found) == 61
