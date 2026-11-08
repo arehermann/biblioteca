@@ -255,7 +255,7 @@ FIELD_NAMES = {"author": "autor", "isbn": "ISBN", "publisher": "editorial", "yea
 
 @app.get("/books/{book_id}", response_class=HTMLResponse)
 def book_page(request: Request, book_id: int, saved: int = 0, completed: str | None = None,
-              photo_error: str = "", web: int = 0):
+              photo_error: str = "", web: int = 0, web_cover: str = ""):
     with db.connect() as conn:
         book = conn.execute("SELECT * FROM books WHERE id = ?", (book_id,)).fetchone()
         if book is None:
@@ -264,6 +264,7 @@ def book_page(request: Request, book_id: int, saved: int = 0, completed: str | N
         return render(request, "book.html", book=book, shelves=shelves(conn), saved=saved, library=book["library"],
                       loan=db.active_loan(conn, book_id), loans=loans, borrowers=db.borrowers(conn),
                       today=date.today().isoformat(), completed=completed, photo_error=photo_error, web=web,
+                      web_cover=web_cover if _our_photo(web_cover) else "",
                       missing=[name for f, name in FIELD_NAMES.items() if not book[f]])
 
 
@@ -860,10 +861,38 @@ async def book_web(book_id: int):
     if not found:
         return back(f"/books/{book_id}?photo_error={quote(error)}")
     changes = {f: found[f] for f in ("author", "publisher", "edition", "year", "cover_url")
-               if found[f] and not book[f] and not (f == "cover_url" and book["cover_manual"])}
+               if found[f] and not book[f]}
     with db.connect() as conn:
         apply_merge(conn, book_id, changes)
-    return back(f"/books/{book_id}?completed={quote(', '.join(MERGE_FIELDS[f] for f in changes))}&web=1")
+    url = f"/books/{book_id}?completed={quote(', '.join(MERGE_FIELDS[f] for f in changes))}&web=1"
+    if found["cover_url"] and "cover_url" not in changes:
+        # The book already has a cover, which may be the wrong edition's: show the one found and let them choose.
+        url += f"&web_cover={quote(found['cover_url'])}#elegir-cubierta"
+    return back(url)
+
+
+def _our_photo(url: str) -> Path | None:
+    """The file behind one of our own photo covers, or None for anything else."""
+    if not url.startswith(db.PHOTO_COVER_PREFIX):
+        return None
+    name = url[len(db.PHOTO_COVER_PREFIX):]
+    return photo_covers_dir() / name if re.fullmatch(r"[0-9a-f]{32}\.jpg", name) else None
+
+
+@app.post("/books/{book_id}/cubierta")
+async def choose_web_cover(book_id: int, cover_url: str = Form(""), use: str = Form("")):
+    """Keeps the cover found on the web, or the one the book had (and the found picture is thrown away)."""
+    photo = _our_photo(cover_url)
+    if photo is None:
+        return back(f"/books/{book_id}")
+    with db.connect() as conn:
+        if use:
+            conn.execute("UPDATE books SET cover_url = ?, cover_manual = 1, cover_checked = 1 WHERE id = ?",
+                         (cover_url, book_id))
+            return back(f"/books/{book_id}?saved=1")
+        if conn.execute("SELECT 1 FROM books WHERE cover_url = ?", (cover_url,)).fetchone() is None:
+            photo.unlink(missing_ok=True)
+    return back(f"/books/{book_id}")
 
 
 def fill_empty(target: dict, found: dict, fields) -> list[str]:

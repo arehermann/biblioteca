@@ -37,7 +37,7 @@
             Completar su ficha con {{ item.merge|map(attribute='name')|join(', ') }}</label>
           {% endif %}
           {% if not item.matched and item.isbn %}
-          <button class="link-btn" form="web-{{ i }}" data-web-button>Buscar en la web (unos 3 centavos)</button>
+          <button class="link-btn" form="web-{{ i }}" data-web-button>Buscar en la web</button>
           {% if item.web_error %}<span class="error small">{{ item.web_error }}</span>{% endif %}
           {% endif %}
           {% if not item.matched and not item.cover_url %}
