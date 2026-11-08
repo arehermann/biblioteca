@@ -648,6 +648,16 @@ def test_lookup_falls_back_to_google_by_title():
     assert calls[-1][1]["q"] == 'intitle:"Los niños del agua" inauthor:"Ana Pérez"'
 
 
+def _cover_jpeg(color="blue") -> bytes:
+    """A book-cover-shaped picture with a title band, like a real cover."""
+    from PIL import Image, ImageDraw
+    img = Image.new("RGB", (200, 300), color)
+    ImageDraw.Draw(img).rectangle((20, 40, 180, 90), fill="white")
+    out = io.BytesIO()
+    img.save(out, format="JPEG", quality=95)
+    return out.getvalue()
+
+
 def _jpeg() -> bytes:
     from PIL import Image
     out = io.BytesIO()
@@ -988,8 +998,8 @@ def test_book_page_offers_the_covers_found_on_the_web(client, monkeypatch):
         made.append(main.save_cover_photo(buf.getvalue()))
         return made[-1]
 
-    async def fake_covers(image_urls, page_urls, isbn="", limit=4):
-        assert image_urls == ["https://x/f.jpg"] and page_urls == ["https://libreria/f"] and limit == 4
+    async def fake_covers(image_urls, page_urls, isbn="", limit=6, title="", author=""):
+        assert image_urls == ["https://x/f.jpg"] and page_urls == ["https://libreria/f"] and limit == 6
         return [photo("red"), photo("green"), photo("blue")]
 
     monkeypatch.setattr(main, "download_covers", fake_covers)
@@ -1020,9 +1030,7 @@ def test_book_page_offers_the_covers_found_on_the_web(client, monkeypatch):
 def test_web_cover_comes_from_the_book_page_when_the_picture_fails(client, monkeypatch):
     import httpx
     from PIL import Image
-    buf = io.BytesIO()
-    Image.new("RGB", (200, 300), "blue").save(buf, format="JPEG", quality=95)
-    jpeg = buf.getvalue() + b"\0" * 3000
+    jpeg = _cover_jpeg() + b"\0" * 3000
     seen = []
 
     def handler(request):
@@ -1030,7 +1038,8 @@ def test_web_cover_comes_from_the_book_page_when_the_picture_fails(client, monke
         if request.url.path == "/inventada.jpg":
             return httpx.Response(404)
         if request.url.path == "/libro/garcia":
-            return httpx.Response(200, html='<html><head><meta property="og:image" content="/img/tapa"></head></html>')
+            return httpx.Response(200, html='<html><head><meta property="og:image" content="/img/tapa"></head>'
+                                              '<body>ISBN: 978-84-9066-689-0</body></html>')
         if request.url.path == "/img/tapa":
             return httpx.Response(302, headers={"location": "https://cdn.libreria.test/tapa.jpg"})
         if request.url.host == "cdn.libreria.test":
@@ -1063,9 +1072,7 @@ def test_one_broken_cover_site_does_not_stop_the_others(monkeypatch, tmp_path):
     import httpx
     from PIL import Image
     monkeypatch.setattr(db, "DATA_DIR", tmp_path)
-    buf = io.BytesIO()
-    Image.new("RGB", (200, 300), "blue").save(buf, format="JPEG", quality=95)
-    jpeg = buf.getvalue() + b"\0" * 3000
+    jpeg = _cover_jpeg() + b"\0" * 3000
 
     def handler(request):
         if request.url.host == "lenta.test":
@@ -1103,3 +1110,47 @@ def test_editions_put_the_books_own_isbn_first(monkeypatch):
     assert found[0]["isbn"] == "9781101905555" and found[0]["publisher"] == "Crown"
     assert found[0]["cover_url"] == "https://covers.openlibrary.org/b/isbn/9781101905555-M.jpg?default=false"
     assert len(found) == 61
+
+
+def test_logos_and_image_not_available_pictures_are_not_covers():
+    from PIL import Image, ImageDraw
+    def jpeg(img):
+        out = io.BytesIO()
+        img.save(out, format="JPEG")
+        return out.getvalue()
+    logo = Image.new("RGB", (300, 120), "white")  # a wide shop logo
+    ImageDraw.Draw(logo).text((20, 50), "agapea.com", fill="green")
+    blank = Image.new("RGB", (200, 300), "white")  # "image not available"
+    ImageDraw.Draw(blank).text((40, 140), "image not available", fill="gray")
+    assert not main.looks_like_cover(jpeg(logo)) and not main.looks_like_cover(jpeg(blank))
+    assert not main.looks_like_cover(jpeg(Image.new("RGB", (1, 1))))  # tracking pixel
+    assert not main.looks_like_cover(jpeg(Image.new("RGB", (200, 300), "gray")))  # plain grey box
+    assert main.looks_like_cover(_cover_jpeg())
+
+
+def test_well_known_book_gets_a_cover_by_title_when_the_isbn_has_none(monkeypatch, tmp_path):
+    import httpx
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
+    jpeg = _cover_jpeg("navy") + b"\0" * 3000
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        if request.url.host == "agapea.test" and request.url.path == "/libro":
+            return httpx.Response(200, html='<meta property="og:image" content="https://agapea.test/logo.png">'
+                                            '<p>Otro libro, ISBN 9780000000000</p>')
+        if request.url.path == "/search.json":
+            if request.url.params.get("title"):
+                return httpx.Response(200, json={"docs": [{"cover_i": 42}]})
+            return httpx.Response(200, json={"docs": []})
+        if request.url.path == "/b/id/42-L.jpg":
+            return httpx.Response(200, content=jpeg, headers={"content-type": "image/jpeg"})
+        return httpx.Response(404)
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    monkeypatch.setattr(main, "_public_https", lambda url: url.startswith("https://"))
+    covers = asyncio.run(main.download_covers([], ["https://agapea.test/libro"], "9781101905555",
+                                              title="Dark Matter", author="Blake Crouch"))
+    assert len(covers) == 1 and main._our_photo(covers[0]).exists()
+    assert not any("logo" in u for u in seen)  # the page is about another ISBN, so its picture is skipped
