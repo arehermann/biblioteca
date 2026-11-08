@@ -77,10 +77,10 @@
       <span class="grow"><span>Escanear código</span><small data-barcode-status role="status">{% if missing %}Para completar: {{ missing|join(', ') }}{% else %}Para completar los datos{% endif %}</small></span>
     </label>
   </form>
-  {% if missing and book.isbn %}
+  {% if book.isbn %}
   <form method="post" action="/books/{{ book.id }}/web" class="row-link scan-row" data-web>
     {{ icon('search', 20) }}
-    <button class="link grow">Buscar en la web<small data-web-status role="status">Claude busca el ISBN (unos 3 centavos)</small></button>
+    <button class="link grow">Buscar en la web<small data-web-status role="status">{% if missing %}Claude busca lo que falta y la cubierta{% else %}Claude busca la cubierta de esta edición{% endif %}</small></button>
   </form>
   {% endif %}
   {% if missing %}
@@ -89,9 +89,22 @@
   <script src="{{ static('cover.js') }}"></script>
   {% endif %}
   {% if photo_error %}<p class="error">{{ photo_error }}</p>{% endif %}
+  {% if web_cover %}
+  <section class="web-cover" id="elegir-cubierta">
+    <p>Claude encontró esta cubierta. ¿Cuál es la de tu ejemplar?</p>
+    <form method="post" action="/books/{{ book.id }}/cubierta" class="choices">
+      <input type="hidden" name="cover_url" value="{{ web_cover }}">
+      <button class="choice" name="keep" value="1">
+        {% if book.cover_url %}<img src="{{ book.cover_url }}" alt="Cubierta actual">{% endif %}<span>La actual</span>
+      </button>
+      <button class="choice" name="use" value="1"><img src="{{ web_cover }}" alt="Cubierta encontrada"><span>La encontrada</span></button>
+    </form>
+  </section>
+  {% endif %}
   {% if completed is not none %}
     {% if completed %}<p class="notice">Se completaron: {{ completed }}.</p>
-    {% elif web %}<p class="error">Claude encontró el libro en la web, pero sin datos que le falten.</p>
+    {% elif web and not web_cover %}<p class="error">Claude encontró el libro en la web, pero sin datos nuevos ni otra cubierta.</p>
+    {% elif web %}
     {% else %}<p class="error">No encontré más datos para ese ISBN en Open Library ni en Google Books.</p>{% endif %}
   {% endif %}
 

@@ -349,3 +349,12 @@ button[data-web-button] small { font-weight: 400; opacity: .8; }
 .loan-card > details[open] > summary::after { content: "−"; }
 .loan-card > details[open] { padding-bottom: 18px; }
 .theme-noche .loan-card > details > summary svg { color: var(--accent); }
+
+/* Cover found on the web: pick yours */
+.web-cover { background: var(--surface); border: var(--bw) solid var(--accent); border-radius: 18px; padding: 14px 16px; }
+.web-cover p { margin: 0 0 10px; font-weight: 700; }
+.web-cover .choices { display: flex; flex-direction: row; gap: 12px; }
+.web-cover .choice { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px;
+  background: var(--surface-2); border: var(--bw) solid var(--line); border-radius: 14px; color: var(--text); font: inherit;
+  font-weight: 700; cursor: pointer; }
+.web-cover .choice img { width: 100%; max-width: 120px; aspect-ratio: 2 / 3; object-fit: cover; border-radius: 6px; }

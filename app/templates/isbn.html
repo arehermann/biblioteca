@@ -71,7 +71,7 @@
     </div>
     {{ library_picker(library) }}
     {% if not found.title and not from_web %}
-    <button class="btn" form="web-form" data-web-button>{{ icon('search', 18) }} Buscar en la web <small>(unos 3 centavos)</small></button>
+    <button class="btn" form="web-form" data-web-button>{{ icon('search', 18) }} Buscar en la web</button>
     {% endif %}
     {% if not found.title or not found.cover_url %}
     {{ cover_photo("cover-form", "Foto de la cubierta" if found.title else "Sacar foto a la cubierta",

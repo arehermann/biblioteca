@@ -967,3 +967,43 @@ def test_review_item_and_book_found_on_the_web(client, monkeypatch):
     with db.connect() as conn:
         b = conn.execute("SELECT * FROM books WHERE id = ?", (known,)).fetchone()
     assert (b["author"], b["publisher"], b["year"], b["notes"]) == ("Ana Ruiz", "Estuario", 2023, "regalo")
+
+
+def test_book_page_offers_the_cover_found_on_the_web(client, monkeypatch):
+    login(client)
+    from PIL import Image
+    with db.connect() as conn:
+        book_id = db.add_book(conn, {"title": "Ficciones", "author": "Borges", "isbn": "9788499089508",
+                                     "publisher": "Debolsillo", "year": 2011, "cover_url": "https://covers/mal.jpg"})
+    page = client.get(f"/books/{book_id}").text
+    assert f'action="/books/{book_id}/web"' in page and "centavos" not in page  # complete books can search too
+
+    saved = []
+
+    async def fake_download(url):
+        buf = io.BytesIO()
+        Image.new("RGB", (200, 300), "red").save(buf, format="JPEG")
+        saved.append(main.save_cover_photo(buf.getvalue()))
+        return saved[-1]
+
+    monkeypatch.setattr(main, "download_cover", fake_download)
+    _fake_web(monkeypatch, {"title": "Ficciones", "author": "Borges", "cover_image_url": "https://x/f.jpg"})
+    r = client.post(f"/books/{book_id}/web", follow_redirects=False)
+    page = client.get(r.headers["location"]).text
+    assert "Claude encontró esta cubierta" in page and f'src="{saved[0]}"' in page
+    assert "sin datos nuevos" not in page
+
+    # Keeping the current one throws the found picture away.
+    client.post(f"/books/{book_id}/cubierta", data={"cover_url": saved[0], "keep": "1"})
+    assert not main._our_photo(saved[0]).exists()
+
+    client.post(f"/books/{book_id}/web")
+    client.post(f"/books/{book_id}/cubierta", data={"cover_url": saved[1], "use": "1"})
+    with db.connect() as conn:
+        b = conn.execute("SELECT cover_url, cover_manual FROM books WHERE id = ?", (book_id,)).fetchone()
+    assert (b["cover_url"], b["cover_manual"]) == (saved[1], 1)
+
+    # Only our own saved pictures can be chosen this way.
+    client.post(f"/books/{book_id}/cubierta", data={"cover_url": "https://evil/x.jpg", "use": "1"})
+    with db.connect() as conn:
+        assert conn.execute("SELECT cover_url FROM books WHERE id = ?", (book_id,)).fetchone()[0] == saved[1]
