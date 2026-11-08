@@ -250,7 +250,7 @@ async def new_book(request: Request):
 
 
 # What a book's page says it is missing, and what filling it from a barcode can add.
-FIELD_NAMES = {"author": "autor", "isbn": "ISBN", "publisher": "editorial", "year": "año", "cover_url": "portada"}
+FIELD_NAMES = {"author": "autor", "isbn": "ISBN", "publisher": "editorial", "year": "año", "cover_url": "cubierta"}
 
 
 @app.get("/books/{book_id}", response_class=HTMLResponse)
@@ -535,7 +535,7 @@ async def save_scan(request: Request, scan_id: int):
 # A barcode scanned for a book that is already catalogued completes that book instead of adding it again: many
 # books came from StoryGraph or a shelf photo with little more than a title, and the barcode knows much more.
 MERGE_FIELDS = {"title": "título", "author": "autor", "isbn": "ISBN", "publisher": "editorial", "edition": "edición",
-                "year": "año", "cover_url": "portada", "shelf": "estante"}
+                "year": "año", "cover_url": "cubierta", "shelf": "estante"}
 EDITION_FIELDS = ("publisher", "edition", "year", "cover_url")
 
 
@@ -625,7 +625,7 @@ async def isbn_lookup(request: Request, isbn: str = Form(""), library: str = For
     try:
         found = await lookup.by_isbn(code)
     except lookup.LookupFailed as e:
-        found, error = None, f"{lookup.failure_note(e)}. Vuelve a buscar en un rato o saca una foto a la portada."
+        found, error = None, f"{lookup.failure_note(e)}. Vuelve a buscar en un rato o saca una foto a la cubierta."
     with db.connect() as conn:
         dup, can_merge = catalogued_copy(conn, code, found, library)
     if dup is not None and can_merge:
@@ -636,7 +636,7 @@ async def isbn_lookup(request: Request, isbn: str = Form(""), library: str = For
         error = error or f"Ya tienes otra edición de este libro en {library}."
     if found is None:
         found = {"title": "", "author": "", "publisher": "", "edition": "", "year": None, "cover_url": "", "isbn": code}
-        error = error or ("No encontré este ISBN en Open Library ni en Google Books. Saca una foto a la portada"
+        error = error or ("No encontré este ISBN en Open Library ni en Google Books. Saca una foto a la cubierta"
                           " y Claude completa los datos, o escríbelos a mano.")
     return isbn_form(request, found=found, shelf=shelf, error=error, other_edition=dup)
 
@@ -703,7 +703,7 @@ async def isbn_batch(request: Request, isbns: str = Form(""), library: str = For
     return back(f"/scan/{scan_id}")
 
 
-# --- Foto de la portada ------------------------------------------------------
+# --- Foto de la cubierta ------------------------------------------------------
 # For books neither Open Library nor Google Books knows: Claude reads the cover (and the copyright page, if
 # photographed too) and the cover photo itself becomes the book's cover.
 
@@ -741,7 +741,7 @@ async def read_cover_photos(form) -> tuple[dict | None, str | None]:
             if data:
                 images.append(data)
     if not images:
-        return None, "Saca una foto a la portada."
+        return None, "Saca una foto a la cubierta."
     try:
         found = await vision.read_cover(images)
     except vision.VisionError as e:
@@ -803,7 +803,7 @@ async def search_web(isbn: str, title: str = "", author: str = "") -> tuple[dict
     except Exception:
         return None, "La búsqueda en la web falló. Vuelve a intentar en un rato."
     if not found["title"]:
-        return None, "Claude no encontró este ISBN en la web. Saca una foto a la portada o escribe los datos a mano."
+        return None, "Claude no encontró este ISBN en la web. Saca una foto a la cubierta o escribe los datos a mano."
     book = {"title": found["title"], "author": found["author"], "publisher": found["publisher"],
             "edition": found["edition"], "year": lookup._year(found["year"]), "isbn": isbn,
             "cover_url": await download_cover(found["cover_image_url"])}

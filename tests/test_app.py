@@ -566,7 +566,7 @@ def test_complete_book_from_barcode(client, monkeypatch):
                 "year": 2011, "cover_url": "https://covers/x.jpg", "isbn": isbn}
 
     monkeypatch.setattr(lookup, "by_isbn", fake_by_isbn)
-    assert "Le faltan: autor, ISBN, portada" in client.get(f"/books/{book_id}").text
+    assert "Para completar: autor, ISBN, cubierta" in client.get(f"/books/{book_id}").text
     r = client.post(f"/books/{book_id}/completar", data={"isbn": "9788499089508"}, follow_redirects=False)
     page = client.get(r.headers["location"]).text
     assert "Se completaron:" in page
@@ -776,7 +776,7 @@ def test_batch_scan_completes_catalogued_books(client, monkeypatch):
     r = client.post("/isbn/lote", data={"isbns": "9788499089508\n9789500404402", "library": "Principal"},
                     follow_redirects=False)
     review = client.get(r.headers["location"]).text
-    assert "Completar su ficha con ISBN, editorial, año, portada" in review
+    assert "Completar su ficha con ISBN, editorial, año, cubierta" in review
     assert 'name="merge_1"' not in review  # another edition of Rayuela: not merged, shown as already there
     assert review.count("Ya está en Principal") == 2
 

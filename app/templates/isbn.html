@@ -23,7 +23,7 @@
         <input type="hidden" name="new_{{ c.field }}" value="{{ c.new }}">
         <span class="grow"><strong>{{ c.name[0]|upper ~ c.name[1:] }}</strong>
         {% if c.field == 'cover_url' %}
-          <span class="covers">{% if c.old %}<img src="{{ c.old }}" alt="Portada actual"> → {% endif %}<img src="{{ c.new }}" alt="Portada nueva"></span>
+          <span class="covers">{% if c.old %}<img src="{{ c.old }}" alt="Cubierta actual"> → {% endif %}<img src="{{ c.new }}" alt="Cubierta nueva"></span>
         {% else %}
           <span>{% if c.old %}<s class="muted">{{ c.old }}</s> → {% endif %}{{ c.new }}</span>
         {% endif %}</span>
@@ -49,7 +49,7 @@
   <script src="{{ static('barcode.js') }}"></script>
   {% else %}
   <div class="found">
-    {% if found.cover_url %}<img src="{{ found.cover_url }}" alt="Portada" class="cover">{% else %}<span class="nocover cover c{{ found.isbn[-1]|int % 6 }}"><span>{{ found.title or 'Sin portada' }}</span></span>{% endif %}
+    {% if found.cover_url %}<img src="{{ found.cover_url }}" alt="Cubierta" class="cover">{% else %}<span class="nocover cover c{{ found.isbn[-1]|int % 6 }}"><span>{{ found.title or 'Sin cubierta' }}</span></span>{% endif %}
     <div>
       <p class="muted small">ISBN {{ found.isbn }}</p>
       <h2>{{ found.title or 'Libro sin datos' }}</h2>
@@ -74,8 +74,8 @@
     <button class="btn" form="web-form" data-web-button>{{ icon('search', 18) }} Buscar en la web <small>(unos 3 centavos)</small></button>
     {% endif %}
     {% if not found.title or not found.cover_url %}
-    {{ cover_photo("cover-form", "Foto de la portada" if found.title else "Sacar foto a la portada",
-                   "Claude lee " + ("la portada" if found.title else "el título, el autor y la editorial") + " y la foto queda como portada") }}
+    {{ cover_photo("cover-form", "Foto de la cubierta" if found.title else "Sacar foto a la cubierta",
+                   "Claude lee " + ("la cubierta" if found.title else "el título, el autor y la editorial") + " y la foto queda como cubierta") }}
     {% endif %}
     <button class="btn primary">Agregar y escanear otro</button>
     <a href="/isbn" class="center">Descartar</a>

@@ -18,7 +18,7 @@
   {% if saved %}<p class="notice">Guardado.</p>{% endif %}
 
   <div class="hero">
-    {% if book.cover_url %}<img src="{{ book.cover_url }}" alt="Portada de {{ book.title }}" class="cover">{% else %}<span class="nocover cover c{{ book.id % 6 }}"><span>{{ book.title[:60] }}</span></span>{% endif %}
+    {% if book.cover_url %}<img src="{{ book.cover_url }}" alt="Cubierta de {{ book.title }}" class="cover">{% else %}<span class="nocover cover c{{ book.id % 6 }}"><span>{{ book.title[:60] }}</span></span>{% endif %}
     <h1>{{ book.title }}</h1>
     {% if book.author %}<p class="author">{{ book.author }}</p>{% endif %}
     {% set edition = [book.edition, book.year|string if book.year else ''] | select | join(' · ') %}
@@ -48,8 +48,9 @@
         {% if past %}<a href="#historial" class="btn" onclick="document.getElementById('historial').open = true">Historial</a>{% endif %}
       </div>
     {% else %}
+      <details>
+      <summary>{{ icon('loans', 20) }} <span class="grow">Prestar este libro</span></summary>
       <form method="post" action="/books/{{ book.id }}/prestar" class="stack">
-        <h2>¿Lo prestaste?</h2>
         <div class="row">
           <label>¿A quién? <input name="person" list="borrowers" required placeholder="Nombre"></label>
           <label>Fecha <input type="date" name="lent_on" value="{{ today }}"></label>
@@ -58,13 +59,14 @@
         <label>Nota (opcional) <input name="notes" placeholder="Ej: se lo llevó a las vacaciones"></label>
         <button class="btn primary">Prestar</button>
       </form>
+      </details>
     {% endif %}
   </section>
 
-  <a href="/books/{{ book.id }}/ediciones" class="row-link">
+  <a href="/books/{{ book.id }}/ediciones" class="row-link two-line">
     {{ icon('editions', 20) }}
-    <span class="grow">Elegir edición y portada</span>
-    {% if book.isbn %}<small>ISBN {{ book.isbn }}</small>{% else %}{{ icon('next', 18) }}{% endif %}
+    <span class="grow"><span>Elegir edición y cubierta</span>{% if book.isbn %}<small>ISBN {{ book.isbn }}</small>{% endif %}</span>
+    {{ icon('next', 18) }}
   </a>
 
   <form method="post" action="/books/{{ book.id }}/completar" class="row-link scan-row">
@@ -72,18 +74,17 @@
     <label class="grow">
       <input type="file" accept="image/*" capture="environment" hidden data-barcode>
       {{ icon('barcode', 20) }}
-      <span class="grow"><span>Escanear código para completar datos</span><small data-barcode-status role="status">{% if missing %}Le faltan: {{ missing|join(', ') }}{% else %}Saca una foto al código de la contratapa{% endif %}</small></span>
+      <span class="grow"><span>Escanear código</span><small data-barcode-status role="status">{% if missing %}Para completar: {{ missing|join(', ') }}{% else %}Para completar los datos{% endif %}</small></span>
     </label>
-    {% if book.isbn and missing %}<button class="link">Completar con el ISBN</button>{% endif %}
   </form>
   {% if missing and book.isbn %}
   <form method="post" action="/books/{{ book.id }}/web" class="row-link scan-row" data-web>
     {{ icon('search', 20) }}
-    <button class="link grow">Buscar en la web<small data-web-status role="status">Claude busca el ISBN en librerías y agencias de ISBN (unos 3 centavos)</small></button>
+    <button class="link grow">Buscar en la web<small data-web-status role="status">Claude busca el ISBN (unos 3 centavos)</small></button>
   </form>
   {% endif %}
   {% if missing %}
-  {{ cover_photo("cover-form", "Foto de la portada para completar datos", "Para libros que no aparecen en ningún catálogo") }}
+  {{ cover_photo("cover-form", "Foto de la cubierta", "Para libros que no están en ningún catálogo") }}
   <form id="cover-form" method="post" action="/books/{{ book.id }}/portada" enctype="multipart/form-data" hidden></form>
   <script src="{{ static('cover.js') }}"></script>
   {% endif %}
