@@ -1,6 +1,7 @@
 import csv
 import io
 import ipaddress
+import logging
 import os
 import socket
 import re
@@ -21,6 +22,7 @@ from PIL import Image, ImageOps
 
 from . import auth, covers, db, lookup, storygraph, vision
 
+log = logging.getLogger("biblioteca")
 BASE = Path(__file__).parent
 PAGE_SIZE = 60
 ALL = "todas"
@@ -780,19 +782,69 @@ def _public_https(url: str) -> bool:
     return bool(addresses) and all(ipaddress.ip_address(a.split("%")[0]).is_global for a in addresses)
 
 
-async def download_cover(url: str) -> str:
-    """The cover at url saved as our own photo cover, or "" when it isn't a usable picture."""
-    if not url or not _public_https(url):
+WEB_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; Biblioteca/1.0; personal book catalog)",
+               "Accept": "text/html,image/avif,image/webp,image/*,*/*;q=0.8", "Accept-Language": "es,en;q=0.8"}
+OG_IMAGE = re.compile(r"""<meta[^>]+(?:property|name)=["'](?:og:image(?::secure_url)?|twitter:image)["'][^>]*>""",
+                      re.IGNORECASE)
+CONTENT = re.compile(r"""content=["']([^"']+)["']""", re.IGNORECASE)
+
+
+async def _safe_get(client: httpx.AsyncClient, url: str, limit: int) -> httpx.Response | None:
+    """GET that follows redirects only to public https addresses, and gives up on answers over limit bytes."""
+    for _ in range(5):
+        if not _public_https(url):
+            log.warning("Cubierta web: dirección no permitida %s", url)
+            return None
+        async with client.stream("GET", url, timeout=15) as r:
+            if r.is_redirect:
+                url = str(r.url.join(r.headers.get("location", "")))
+                continue
+            body = b""
+            async for chunk in r.aiter_bytes():
+                body += chunk
+                if len(body) > limit:
+                    log.warning("Cubierta web: %s es demasiado grande", url)
+                    return None
+            r._content = body
+            return r
+    return None
+
+
+async def _picture(client, url: str) -> str:
+    r = await _safe_get(client, url, WEB_COVER_MAX)
+    if r is None or r.status_code != 200 or not r.headers.get("content-type", "").startswith("image/") \
+            or len(r.content) < 2_000:
+        log.warning("Cubierta web: %s no es una imagen usable (%s)", url, r.status_code if r is not None else "-")
         return ""
     try:
-        async with httpx.AsyncClient(headers=lookup.HEADERS, follow_redirects=False) as client:
-            r = await client.get(url, timeout=15)
-        if r.status_code != 200 or not r.headers.get("content-type", "").startswith("image/") \
-                or not 2_000 < len(r.content) < WEB_COVER_MAX:
-            return ""
         return save_cover_photo(r.content)
     except Exception:
+        log.warning("Cubierta web: %s no se pudo abrir como imagen", url)
         return ""
+
+
+async def download_cover(url: str, page_url: str = "", isbn: str = "") -> str:
+    """The cover found on the web, saved as our own photo cover; "" when none works. Tries the picture Claude
+    pointed to, then the picture the book's page shares (og:image), then Open Library's cover for the ISBN."""
+    try:
+        async with httpx.AsyncClient(headers=WEB_HEADERS, follow_redirects=False) as client:
+            if url and (saved := await _picture(client, url)):
+                return saved
+            if page_url:
+                page = await _safe_get(client, page_url, 3_000_000)
+                if page is not None and page.status_code == 200:
+                    for tag in OG_IMAGE.findall(page.text):
+                        m = CONTENT.search(tag)
+                        if m and (saved := await _picture(client, str(page.url.join(m.group(1).strip())))):
+                            return saved
+                else:
+                    log.warning("Cubierta web: la página %s no respondió (%s)", page_url,
+                             page.status_code if page is not None else "-")
+            if isbn:
+                return await _picture(client, f"https://covers.openlibrary.org/b/isbn/{isbn}-L.jpg?default=false")
+    except Exception as e:
+        log.warning("Cubierta web: falló la descarga (%s)", e)
+    return ""
 
 
 async def search_web(isbn: str, title: str = "", author: str = "") -> tuple[dict | None, str | None]:
@@ -807,7 +859,7 @@ async def search_web(isbn: str, title: str = "", author: str = "") -> tuple[dict
         return None, "Claude no encontró este ISBN en la web. Saca una foto a la cubierta o escribe los datos a mano."
     book = {"title": found["title"], "author": found["author"], "publisher": found["publisher"],
             "edition": found["edition"], "year": lookup._year(found["year"]), "isbn": isbn,
-            "cover_url": await download_cover(found["cover_image_url"])}
+            "cover_url": await download_cover(found["cover_image_url"], found["page_url"], isbn)}
     return book, None
 
 
