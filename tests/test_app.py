@@ -903,7 +903,7 @@ def _fake_web(monkeypatch, result):
         asked.append((isbn, title))
         if isinstance(result, Exception):
             raise result
-        return {"title": "", "author": "", "publisher": "", "year": "", "edition": "", "cover_image_url": "", "page_url": "",
+        return {"title": "", "author": "", "publisher": "", "year": "", "edition": "", "cover_image_urls": [], "page_urls": [],
                 **result}
 
     monkeypatch.setattr(vision, "search_web", fake_search_web)
@@ -969,7 +969,7 @@ def test_review_item_and_book_found_on_the_web(client, monkeypatch):
     assert (b["author"], b["publisher"], b["year"], b["notes"]) == ("Ana Ruiz", "Estuario", 2023, "regalo")
 
 
-def test_book_page_offers_the_cover_found_on_the_web(client, monkeypatch):
+def test_book_page_offers_the_covers_found_on_the_web(client, monkeypatch):
     login(client)
     from PIL import Image
     with db.connect() as conn:
@@ -978,35 +978,41 @@ def test_book_page_offers_the_cover_found_on_the_web(client, monkeypatch):
     page = client.get(f"/books/{book_id}").text
     assert f'action="/books/{book_id}/web"' in page and "centavos" not in page  # complete books can search too
 
-    saved = []
+    made = []
 
-    async def fake_download(url, *args):
+    def photo(color):
         buf = io.BytesIO()
-        Image.new("RGB", (200, 300), "red").save(buf, format="JPEG")
-        saved.append(main.save_cover_photo(buf.getvalue()))
-        return saved[-1]
+        Image.new("RGB", (200, 300), color).save(buf, format="JPEG")
+        made.append(main.save_cover_photo(buf.getvalue()))
+        return made[-1]
 
-    monkeypatch.setattr(main, "download_cover", fake_download)
-    _fake_web(monkeypatch, {"title": "Ficciones", "author": "Borges", "cover_image_url": "https://x/f.jpg"})
+    async def fake_covers(image_urls, page_urls, isbn="", limit=4):
+        assert image_urls == ["https://x/f.jpg"] and page_urls == ["https://libreria/f"] and limit == 4
+        return [photo("red"), photo("green"), photo("blue")]
+
+    monkeypatch.setattr(main, "download_covers", fake_covers)
+    _fake_web(monkeypatch, {"title": "Ficciones", "author": "Borges", "cover_image_urls": ["https://x/f.jpg"],
+                            "page_urls": ["https://libreria/f"]})
     r = client.post(f"/books/{book_id}/web", follow_redirects=False)
     page = client.get(r.headers["location"]).text
-    assert "Claude encontró esta cubierta" in page and f'src="{saved[0]}"' in page
-    assert "sin datos nuevos" not in page
+    assert "Claude encontró estas cubiertas" in page and "La actual" in page and "sin datos nuevos" not in page
+    assert all(f'value="{c}"><img src="{c}"' in page for c in made)
 
-    # Keeping the current one throws the found picture away.
-    client.post(f"/books/{book_id}/cubierta", data={"cover_url": saved[0], "keep": "1"})
-    assert not main._our_photo(saved[0]).exists()
-
-    client.post(f"/books/{book_id}/web")
-    client.post(f"/books/{book_id}/cubierta", data={"cover_url": saved[1], "use": "1"})
+    # Picking one keeps it and throws the others away.
+    client.post(f"/books/{book_id}/cubierta", data={"candidates": made, "choose": made[1]})
     with db.connect() as conn:
         b = conn.execute("SELECT cover_url, cover_manual FROM books WHERE id = ?", (book_id,)).fetchone()
-    assert (b["cover_url"], b["cover_manual"]) == (saved[1], 1)
+    assert (b["cover_url"], b["cover_manual"]) == (made[1], 1)
+    assert [main._our_photo(c).exists() for c in made] == [False, True, False]
 
-    # Only our own saved pictures can be chosen this way.
-    client.post(f"/books/{book_id}/cubierta", data={"cover_url": "https://evil/x.jpg", "use": "1"})
+    # Keeping the current one throws them all away; only our own saved pictures can be chosen.
+    made.clear()
+    client.post(f"/books/{book_id}/web")
+    client.post(f"/books/{book_id}/cubierta", data={"candidates": made, "choose": ""})
+    assert not any(main._our_photo(c).exists() for c in made)
+    client.post(f"/books/{book_id}/cubierta", data={"candidates": ["https://evil/x.jpg"], "choose": "https://evil/x.jpg"})
     with db.connect() as conn:
-        assert conn.execute("SELECT cover_url FROM books WHERE id = ?", (book_id,)).fetchone()[0] == saved[1]
+        assert conn.execute("SELECT cover_url FROM books WHERE id = ?", (book_id,)).fetchone()[0].startswith("/portadas/")
 
 
 def test_web_cover_comes_from_the_book_page_when_the_picture_fails(client, monkeypatch):
@@ -1048,4 +1054,4 @@ def test_web_cover_comes_from_the_book_page_when_the_picture_fails(client, monke
     seen.clear()
     assert asyncio.run(main.download_cover("https://libreria.test/x.jpg", "", "9788490666890")) == ""
     assert "https://interno.local/x.jpg" not in seen
-    assert seen[-1].startswith("https://covers.openlibrary.org/b/isbn/9788490666890-L.jpg")
+    assert any(u.startswith("https://covers.openlibrary.org/b/isbn/9788490666890-L.jpg") for u in seen)

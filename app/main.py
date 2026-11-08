@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import io
 import ipaddress
 import logging
@@ -11,7 +12,7 @@ from pathlib import Path
 from datetime import date
 from urllib.parse import quote
 
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -257,7 +258,7 @@ FIELD_NAMES = {"author": "autor", "isbn": "ISBN", "publisher": "editorial", "yea
 
 @app.get("/books/{book_id}", response_class=HTMLResponse)
 def book_page(request: Request, book_id: int, saved: int = 0, completed: str | None = None,
-              photo_error: str = "", web: int = 0, web_cover: str = ""):
+              photo_error: str = "", web: int = 0, web_cover: list[str] = Query([])):
     with db.connect() as conn:
         book = conn.execute("SELECT * FROM books WHERE id = ?", (book_id,)).fetchone()
         if book is None:
@@ -266,7 +267,7 @@ def book_page(request: Request, book_id: int, saved: int = 0, completed: str | N
         return render(request, "book.html", book=book, shelves=shelves(conn), saved=saved, library=book["library"],
                       loan=db.active_loan(conn, book_id), loans=loans, borrowers=db.borrowers(conn),
                       today=date.today().isoformat(), completed=completed, photo_error=photo_error, web=web,
-                      web_cover=web_cover if _our_photo(web_cover) else "",
+                      web_covers=[c for c in web_cover if _our_photo(c)][:WEB_COVER_CHOICES],
                       missing=[name for f, name in FIELD_NAMES.items() if not book[f]])
 
 
@@ -823,31 +824,66 @@ async def _picture(client, url: str) -> str:
         return ""
 
 
-async def download_cover(url: str, page_url: str = "", isbn: str = "") -> str:
-    """The cover found on the web, saved as our own photo cover; "" when none works. Tries the picture Claude
-    pointed to, then the picture the book's page shares (og:image), then Open Library's cover for the ISBN."""
+WEB_COVER_CHOICES = 4
+
+
+async def download_covers(image_urls, page_urls, isbn: str = "", limit: int = WEB_COVER_CHOICES) -> list[str]:
+    """Covers found on the web, saved as our own photo covers, so the person can pick the right one (some sites
+    stamp a watermark on theirs). Tries the pictures Claude pointed to, the picture each page it found shares
+    (og:image), then Open Library's and Google Books' covers for the ISBN. Identical pictures are kept once."""
+    candidates = list(image_urls)
+    saved, seen = [], set()
+
+    async def take(client, url):
+        if len(saved) >= limit or url in seen:
+            return
+        seen.add(url)
+        path = await _picture(client, url)
+        if not path:
+            return
+        digest = hashlib.sha1(_our_photo(path).read_bytes()).hexdigest()
+        if digest in seen:
+            _our_photo(path).unlink(missing_ok=True)
+            return
+        seen.add(digest)
+        saved.append(path)
+
     try:
         async with httpx.AsyncClient(headers=WEB_HEADERS, follow_redirects=False) as client:
-            if url and (saved := await _picture(client, url)):
-                return saved
-            if page_url:
+            for url in candidates:
+                await take(client, url)
+            for page_url in page_urls:
+                if len(saved) >= limit:
+                    break
                 page = await _safe_get(client, page_url, 3_000_000)
-                if page is not None and page.status_code == 200:
-                    for tag in OG_IMAGE.findall(page.text):
-                        m = CONTENT.search(tag)
-                        if m and (saved := await _picture(client, str(page.url.join(m.group(1).strip())))):
-                            return saved
-                else:
+                if page is None or page.status_code != 200:
                     log.warning("Cubierta web: la página %s no respondió (%s)", page_url,
-                             page.status_code if page is not None else "-")
-            if isbn:
-                return await _picture(client, f"https://covers.openlibrary.org/b/isbn/{isbn}-L.jpg?default=false")
+                                page.status_code if page is not None else "-")
+                    continue
+                for tag in OG_IMAGE.findall(page.text)[:2]:
+                    if m := CONTENT.search(tag):
+                        await take(client, str(page.url.join(m.group(1).strip())))
+            if isbn and len(saved) < limit:
+                await take(client, f"https://covers.openlibrary.org/b/isbn/{isbn}-L.jpg?default=false")
+                try:
+                    google = (await lookup._google_books(client, isbn) or {}) if len(saved) < limit else {}
+                except Exception:
+                    google = {}
+                if google.get("cover_url") and len(saved) < limit:
+                    await take(client, google["cover_url"].replace("zoom=1", "zoom=2"))
     except Exception as e:
         log.warning("Cubierta web: falló la descarga (%s)", e)
-    return ""
+    return saved
 
 
-async def search_web(isbn: str, title: str = "", author: str = "") -> tuple[dict | None, str | None]:
+async def download_cover(url: str, page_url: str = "", isbn: str = "") -> str:
+    """The first cover download_covers finds, or ""."""
+    covers = await download_covers([url] if url else [], [page_url] if page_url else [], isbn, limit=1)
+    return covers[0] if covers else ""
+
+
+async def search_web(isbn: str, title: str = "", author: str = "",
+                     want_covers: bool = False) -> tuple[dict | None, str | None]:
     """The book with this ISBN as found on the web by Claude, or (None, what to tell the person)."""
     try:
         found = await vision.search_web(isbn, title, author)
@@ -857,9 +893,12 @@ async def search_web(isbn: str, title: str = "", author: str = "") -> tuple[dict
         return None, "La búsqueda en la web falló. Vuelve a intentar en un rato."
     if not found["title"]:
         return None, "Claude no encontró este ISBN en la web. Saca una foto a la cubierta o escribe los datos a mano."
+    covers = await download_covers(found["cover_image_urls"], found["page_urls"], isbn,
+                                   limit=WEB_COVER_CHOICES if want_covers else 1)
     book = {"title": found["title"], "author": found["author"], "publisher": found["publisher"],
             "edition": found["edition"], "year": lookup._year(found["year"]), "isbn": isbn,
-            "cover_url": await download_cover(found["cover_image_url"], found["page_url"], isbn)}
+            "covers": covers}
+    book["cover_url"] = book["covers"][0] if book["covers"] else ""
     return book, None
 
 
@@ -909,17 +948,19 @@ async def book_web(book_id: int):
     code = lookup.clean_isbn(book["isbn"])
     if not code:
         return back(f"/books/{book_id}")
-    found, error = await search_web(code, book["title"], book["author"])
+    found, error = await search_web(code, book["title"], book["author"], want_covers=True)
     if not found:
         return back(f"/books/{book_id}?photo_error={quote(error)}")
-    changes = {f: found[f] for f in ("author", "publisher", "edition", "year", "cover_url")
-               if found[f] and not book[f]}
+    changes = {f: found[f] for f in ("author", "publisher", "edition", "year") if found[f] and not book[f]}
+    covers = found["covers"]
+    if covers and not book["cover_url"] and len(covers) == 1:
+        changes["cover_url"] = covers.pop()
     with db.connect() as conn:
         apply_merge(conn, book_id, changes)
     url = f"/books/{book_id}?completed={quote(', '.join(MERGE_FIELDS[f] for f in changes))}&web=1"
-    if found["cover_url"] and "cover_url" not in changes:
-        # The book already has a cover, which may be the wrong edition's: show the one found and let them choose.
-        url += f"&web_cover={quote(found['cover_url'])}#elegir-cubierta"
+    if covers:
+        # Covers found may be another edition's or carry a watermark: show them all and let the person choose.
+        url += "".join(f"&web_cover={quote(c)}" for c in covers) + "#elegir-cubierta"
     return back(url)
 
 
@@ -932,19 +973,19 @@ def _our_photo(url: str) -> Path | None:
 
 
 @app.post("/books/{book_id}/cubierta")
-async def choose_web_cover(book_id: int, cover_url: str = Form(""), use: str = Form("")):
-    """Keeps the cover found on the web, or the one the book had (and the found picture is thrown away)."""
-    photo = _our_photo(cover_url)
-    if photo is None:
-        return back(f"/books/{book_id}")
+async def choose_web_cover(request: Request, book_id: int):
+    """Keeps the cover picked among those found on the web (or the one the book had); the rest are thrown away."""
+    form = await request.form()
+    offered = [c for c in form.getlist("candidates") if _our_photo(c)]
+    chosen = form.get("choose") or ""
     with db.connect() as conn:
-        if use:
+        if chosen in offered:
             conn.execute("UPDATE books SET cover_url = ?, cover_manual = 1, cover_checked = 1 WHERE id = ?",
-                         (cover_url, book_id))
-            return back(f"/books/{book_id}?saved=1")
-        if conn.execute("SELECT 1 FROM books WHERE cover_url = ?", (cover_url,)).fetchone() is None:
-            photo.unlink(missing_ok=True)
-    return back(f"/books/{book_id}")
+                         (chosen, book_id))
+        for c in offered:
+            if c != chosen and conn.execute("SELECT 1 FROM books WHERE cover_url = ?", (c,)).fetchone() is None:
+                _our_photo(c).unlink(missing_ok=True)
+    return back(f"/books/{book_id}?saved=1" if chosen in offered else f"/books/{book_id}")
 
 
 def fill_empty(target: dict, found: dict, fields) -> list[str]:

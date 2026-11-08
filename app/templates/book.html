@@ -89,21 +89,24 @@
   <script src="{{ static('cover.js') }}"></script>
   {% endif %}
   {% if photo_error %}<p class="error">{{ photo_error }}</p>{% endif %}
-  {% if web_cover %}
+  {% if web_covers %}
   <section class="web-cover" id="elegir-cubierta">
-    <p>Claude encontró esta cubierta. ¿Cuál es la de tu ejemplar?</p>
+    <p>Claude encontró {{ 'esta cubierta' if web_covers|length == 1 else 'estas cubiertas' }}. ¿Cuál es la de tu ejemplar?</p>
     <form method="post" action="/books/{{ book.id }}/cubierta" class="choices">
-      <input type="hidden" name="cover_url" value="{{ web_cover }}">
-      <button class="choice" name="keep" value="1">
-        {% if book.cover_url %}<img src="{{ book.cover_url }}" alt="Cubierta actual">{% endif %}<span>La actual</span>
+      {% for c in web_covers %}<input type="hidden" name="candidates" value="{{ c }}">{% endfor %}
+      <button class="choice" name="choose" value="">
+        {% if book.cover_url %}<img src="{{ book.cover_url }}" alt="Cubierta actual"><span>La actual</span>
+        {% else %}<span class="nocover-choice">Ninguna</span><span>Sin cubierta</span>{% endif %}
       </button>
-      <button class="choice" name="use" value="1"><img src="{{ web_cover }}" alt="Cubierta encontrada"><span>La encontrada</span></button>
+      {% for c in web_covers %}
+      <button class="choice" name="choose" value="{{ c }}"><img src="{{ c }}" alt="Cubierta encontrada {{ loop.index }}"><span>Opción {{ loop.index }}</span></button>
+      {% endfor %}
     </form>
   </section>
   {% endif %}
   {% if completed is not none %}
     {% if completed %}<p class="notice">Se completaron: {{ completed }}.</p>
-    {% elif web and not web_cover %}<p class="error">Claude encontró el libro en la web, pero sin datos nuevos ni otra cubierta.</p>
+    {% elif web and not web_covers %}<p class="error">Claude encontró el libro en la web, pero sin datos nuevos ni otra cubierta.</p>
     {% elif web %}
     {% else %}<p class="error">No encontré más datos para ese ISBN en Open Library ni en Google Books.</p>{% endif %}
   {% endif %}

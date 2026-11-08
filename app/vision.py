@@ -151,23 +151,24 @@ async def read_cover(images: list[bytes], client: anthropic.AsyncAnthropic | Non
 # when someone presses "Buscar en la web", since each search is billed: Claude Haiku keeps it to a few cents.
 
 WEB_MODEL = "claude-haiku-5-5"
-WEB_FIELDS = ("title", "author", "publisher", "year", "edition", "cover_image_url", "page_url")
+WEB_FIELDS = ("title", "author", "publisher", "year", "edition")
+WEB_LISTS = ("cover_image_urls", "page_urls")
 
 WEB_PROMPT = """Find the book with ISBN {isbn} on the web.{hint} Bookshops, publishers and national ISBN agencies \
 (for example the ones of Uruguay, Argentina, Chile, Mexico or Spain) usually list it. Check that the page really \
 is for this ISBN.
 
-Then answer with only a JSON object, no other text, with these keys (empty string when you didn't find it; never \
-guess):
+Then answer with only a JSON object, no other text, with these keys (empty string or list when you didn't find \
+it; never guess):
 - "title": the title in its original language, with the subtitle after a colon only if it is clearly part of it
 - "author": the author(s), separated by commas
 - "publisher": the publisher or imprint of this edition
 - "year": the year this edition was published
 - "edition": edition statement such as "2a ed.", empty if none
-- "cover_image_url": a direct link to a picture of this edition's front cover (a .jpg, .png or .webp image \
-address you saw on a page about this ISBN), empty if you didn't see one
-- "page_url": the address of the best page you found about this exact ISBN (a bookshop or publisher page \
-showing this edition), empty if none
+- "cover_image_urls": a list of up to 3 direct links to pictures of this edition's front cover (.jpg, .png or \
+.webp image addresses you saw on pages about this ISBN, from different sites if you can), empty list if none
+- "page_urls": a list of up to 4 addresses of pages about this exact ISBN (bookshops, the publisher, the ISBN \
+agency), each from a different site, best first; empty list if none
 
 If no page is about this ISBN, answer with every value empty."""
 
@@ -226,4 +227,8 @@ async def search_web(isbn: str, title: str = "", author: str = "",
         data = _json_object("".join(b.text for b in blocks if b.type == "text"))
     if data is None:
         raise VisionError("La respuesta de Claude no se pudo leer. Vuelve a intentar.")
-    return {k: str(data.get(k) or "").strip() for k in WEB_FIELDS}
+    found = {k: str(data.get(k) or "").strip() for k in WEB_FIELDS}
+    for k in WEB_LISTS:
+        value = data.get(k) or data.get(k[:-1]) or []  # the singular, in case it answers with one
+        found[k] = [str(v).strip() for v in ([value] if isinstance(value, str) else value) if str(v).strip()][:4]
+    return found
