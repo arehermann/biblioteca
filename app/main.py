@@ -811,11 +811,29 @@ async def _safe_get(client: httpx.AsyncClient, url: str, limit: int) -> httpx.Re
     return None
 
 
+def looks_like_cover(data: bytes) -> bool:
+    """False for what sites serve instead of a cover: logos, "image not available" boxes, tiny or square icons."""
+    try:
+        img = ImageOps.exif_transpose(Image.open(io.BytesIO(data)))
+        w, h = img.size
+        if w < 90 or h < 120 or not 1.1 <= h / w <= 2.0:
+            return False
+        small = img.convert("L").resize((40, 60))
+        pixels = list(small.tobytes())
+        blank = sum(p > 232 for p in pixels) / len(pixels)
+        return blank < 0.8 and max(pixels) - min(pixels) > 40
+    except Exception:
+        return False
+
+
 async def _picture(client, url: str) -> str:
     r = await _safe_get(client, url, WEB_COVER_MAX)
     if r is None or r.status_code != 200 or not r.headers.get("content-type", "").startswith("image/") \
             or len(r.content) < 2_000:
         log.warning("Cubierta web: %s no es una imagen usable (%s)", url, r.status_code if r is not None else "-")
+        return ""
+    if not looks_like_cover(r.content):
+        log.warning("Cubierta web: %s no parece una cubierta (logo o aviso)", url)
         return ""
     try:
         return save_cover_photo(r.content)
@@ -824,18 +842,35 @@ async def _picture(client, url: str) -> str:
         return ""
 
 
-WEB_COVER_CHOICES = 4
+WEB_COVER_CHOICES = 6
 
 
-async def download_covers(image_urls, page_urls, isbn: str = "", limit: int = WEB_COVER_CHOICES) -> list[str]:
+def _isbn10(isbn13: str) -> str:
+    if not isbn13.startswith("978") or len(isbn13) != 13:
+        return ""
+    core = isbn13[3:12]
+    check = (11 - sum((10 - i) * int(c) for i, c in enumerate(core)) % 11) % 11
+    return core + ("X" if check == 10 else str(check))
+
+
+def _about(page_text: str, isbn: str) -> bool:
+    """Whether a page really is about this ISBN (and not a search or home page whose picture is the site logo)."""
+    if not isbn:
+        return True
+    digits = re.sub(r"[\s-]", "", page_text)
+    return isbn in digits or (bool(_isbn10(isbn)) and _isbn10(isbn) in digits)
+
+
+async def download_covers(image_urls, page_urls, isbn: str = "", limit: int = WEB_COVER_CHOICES,
+                          title: str = "", author: str = "") -> list[str]:
     """Covers found on the web, saved as our own photo covers, so the person can pick the right one (some sites
-    stamp a watermark on theirs). Tries the pictures Claude pointed to, the picture each page it found shares
-    (og:image), then Open Library's and Google Books' covers for the ISBN. Identical pictures are kept once."""
-    candidates = list(image_urls)
+    stamp a watermark on theirs). Tries the pictures Claude pointed to, the picture each page about this ISBN
+    shares (og:image), then Open Library and Google Books by ISBN, and last their covers for the title and author
+    (another edition, but better than nothing for a well-known book). Logos, placeholders and repeats are left out."""
     saved, seen = [], set()
 
     async def take(client, url):
-        if len(saved) >= limit or url in seen:
+        if not url or len(saved) >= limit or url in seen:
             return
         seen.add(url)
         try:
@@ -852,35 +887,43 @@ async def download_covers(image_urls, page_urls, isbn: str = "", limit: int = WE
         seen.add(digest)
         saved.append(path)
 
-    try:
-        async with httpx.AsyncClient(headers=WEB_HEADERS, follow_redirects=False) as client:
-            for url in candidates:
-                await take(client, url)
-            for page_url in page_urls:
-                if len(saved) >= limit:
-                    break
-                try:
-                    page = await _safe_get(client, page_url, 3_000_000)
-                except Exception as e:
-                    log.warning("Cubierta web: la página %s falló (%s: %s)", page_url, type(e).__name__, e)
-                    continue
-                if page is None or page.status_code != 200:
-                    log.warning("Cubierta web: la página %s no respondió (%s)", page_url,
-                                page.status_code if page is not None else "-")
-                    continue
-                for tag in OG_IMAGE.findall(page.text)[:2]:
-                    if m := CONTENT.search(tag):
-                        await take(client, str(page.url.join(m.group(1).strip())))
-            if isbn and len(saved) < limit:
-                await take(client, f"https://covers.openlibrary.org/b/isbn/{isbn}-L.jpg?default=false")
-                try:
-                    google = (await lookup._google_books(client, isbn) or {}) if len(saved) < limit else {}
-                except Exception:
-                    google = {}
-                if google.get("cover_url") and len(saved) < limit:
-                    await take(client, google["cover_url"].replace("zoom=1", "zoom=2"))
-    except Exception as e:
-        log.warning("Cubierta web: falló la descarga (%s)", e)
+    async def ask(what, call):
+        """A catalog's answer, or nothing when it fails: covers from the other sources still count."""
+        if len(saved) >= limit:
+            return None
+        try:
+            return await call()
+        except Exception as e:
+            log.warning("Cubierta web: %s falló (%s: %s)", what, type(e).__name__, e)
+            return None
+
+    async with httpx.AsyncClient(headers=WEB_HEADERS, follow_redirects=False) as client:
+        for url in image_urls:
+            await take(client, url)
+        for page_url in page_urls:
+            page = await ask(page_url, lambda: _safe_get(client, page_url, 3_000_000))
+            if page is None or page.status_code != 200:
+                continue
+            if not _about(page.text, isbn):
+                log.warning("Cubierta web: la página %s no habla de este ISBN", page_url)
+                continue
+            for tag in OG_IMAGE.findall(page.text)[:2]:
+                if (m := CONTENT.search(tag)) and "logo" not in m.group(1).lower():
+                    await take(client, str(page.url.join(m.group(1).strip())))
+        if isbn:
+            await take(client, f"https://covers.openlibrary.org/b/isbn/{isbn}-L.jpg?default=false")
+            docs = await ask("Open Library", lambda: lookup._search(client, isbn=isbn)) or []
+            if docs and docs[0].get("cover_i"):
+                await take(client, f"https://covers.openlibrary.org/b/id/{docs[0]['cover_i']}-L.jpg")
+            google = await ask("Google Books", lambda: lookup._google_books(client, isbn)) or {}
+            await take(client, google.get("cover_url", ""))
+        if title:
+            docs = await ask("Open Library", lambda: lookup._search(client, title=title, author=author)
+                             if author else lookup._search(client, title=title)) or []
+            if docs and docs[0].get("cover_i"):
+                await take(client, f"https://covers.openlibrary.org/b/id/{docs[0]['cover_i']}-L.jpg")
+            google = await ask("Google Books", lambda: lookup.google_lookup(client, title, author)) or {}
+            await take(client, google.get("cover_url", ""))
     return saved
 
 
@@ -902,7 +945,8 @@ async def search_web(isbn: str, title: str = "", author: str = "",
     if not found["title"]:
         return None, "Claude no encontró este ISBN en la web. Saca una foto a la cubierta o escribe los datos a mano."
     covers = await download_covers(found["cover_image_urls"], found["page_urls"], isbn,
-                                   limit=WEB_COVER_CHOICES if want_covers else 1)
+                                   limit=WEB_COVER_CHOICES if want_covers else 1,
+                                   title=found["title"] or title, author=found["author"] or author)
     book = {"title": found["title"], "author": found["author"], "publisher": found["publisher"],
             "edition": found["edition"], "year": lookup._year(found["year"]), "isbn": isbn,
             "covers": covers}
@@ -959,7 +1003,7 @@ async def book_web(book_id: int):
     found, error = await search_web(code, book["title"], book["author"], want_covers=True)
     if not found:
         # Claude found nothing, but Open Library or Google Books may still have the cover for this ISBN.
-        covers = await download_covers([], [], code)
+        covers = await download_covers([], [], code, title=book["title"], author=book["author"])
         if covers:
             return back(f"/books/{book_id}?completed=&web=1" + "".join(f"&web_cover={quote(c)}" for c in covers)
                         + "#elegir-cubierta")
