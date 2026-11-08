@@ -17,7 +17,7 @@ document.querySelectorAll('[data-cover]').forEach(box => {
   front.addEventListener('change', () => {
     if (!front.files.length) return;
     next.hidden = false;
-    say('Portada lista. Si sumas la página legal (la de los datos de impresión), salen la editorial, el año y el ISBN.');
+    say('Cubierta lista. Si sumas la página legal (la de los datos de impresión), salen la editorial, el año y el ISBN.');
   });
   legal.addEventListener('change', () => { if (legal.files.length) form.requestSubmit(); });
 });

@@ -337,3 +337,15 @@ button.link { background: none; border: 0; color: var(--accent); font: inherit; 
 .review button.link-btn { background: none; border: 0; padding: 4px 0; color: var(--accent); font: inherit; font-weight: 700;
   font-size: .9rem; cursor: pointer; text-align: left; }
 button[data-web-button] small { font-weight: 400; opacity: .8; }
+
+/* Book page: compact rows, and lending folded until needed */
+.row-link.two-line .grow { display: flex; flex-direction: column; min-width: 0; }
+.scan-row label .grow > span, .row-link.two-line .grow > span { line-height: 1.25; }
+.cover-photo .row-link { flex-direction: row; align-items: center; text-align: left; }
+.loan-card:has(> details) { padding: 0 18px; }
+.loan-card > details > summary { min-height: 56px; display: flex; align-items: center; gap: 12px; font-weight: 700; cursor: pointer; list-style: none; }
+.loan-card > details > summary::-webkit-details-marker { display: none; }
+.loan-card > details > summary::after { content: "+"; font-size: 1.3rem; color: var(--muted); }
+.loan-card > details[open] > summary::after { content: "−"; }
+.loan-card > details[open] { padding-bottom: 18px; }
+.theme-noche .loan-card > details > summary svg { color: var(--accent); }

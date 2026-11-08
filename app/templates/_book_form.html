@@ -14,6 +14,6 @@
   <label>Estante <input name="shelf" value="{{ book.shelf if book else '' }}" list="shelves" placeholder="Ej: Living, repisa 2"></label>
   <datalist id="shelves">{% for s in shelves %}<option value="{{ s }}">{% endfor %}</datalist>
   <label>Notas <textarea name="notes" rows="3">{{ book.notes if book else '' }}</textarea></label>
-  <label>URL de portada <input name="cover_url" value="{{ book.cover_url if book else '' }}" placeholder="Se busca sola si la dejas vacía"></label>
+  <label>URL de cubierta <input name="cover_url" value="{{ book.cover_url if book else '' }}" placeholder="Se busca sola si la dejas vacía"></label>
   <button class="btn primary">Guardar</button>
 </form>

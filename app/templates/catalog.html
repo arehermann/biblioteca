@@ -17,7 +17,7 @@
 {% if added and added != '0' %}<p class="notice">Se agregaron {{ added }} libros.</p>{% endif %}
 {% if merged %}<p class="notice">Se completaron los datos de {{ merged }} {{ 'libro que ya estaba' if merged == '1' else 'libros que ya estaban' }} en el catálogo.</p>{% endif %}
 {% if moved %}<p class="notice">Se movieron {{ moved }} libros a {{ library }}.</p>{% endif %}
-{% if covers_running %}<p class="notice">Buscando portadas en Open Library: quedan {{ covers_left }} libros. Recarga para ver el avance.</p>{% endif %}
+{% if covers_running %}<p class="notice">Buscando cubiertas en Open Library: quedan {{ covers_left }} libros. Recarga para ver el avance.</p>{% endif %}
 
 <form class="search" method="get" action="/">
   <input type="hidden" name="library" value="{{ lib_param }}">

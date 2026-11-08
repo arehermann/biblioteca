@@ -41,7 +41,7 @@
           {% if item.web_error %}<span class="error small">{{ item.web_error }}</span>{% endif %}
           {% endif %}
           {% if not item.matched and not item.cover_url %}
-          {{ cover_photo("cover-" ~ i, "Foto de la portada", item.photo_error or "", compact=True) }}
+          {{ cover_photo("cover-" ~ i, "Foto de la cubierta", item.photo_error or "", compact=True) }}
           {% if item.photo_error %}<span class="error small">{{ item.photo_error }}</span>{% endif %}
           {% endif %}
         </div>
